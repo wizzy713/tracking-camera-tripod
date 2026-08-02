@@ -58,6 +58,7 @@ import kotlin.concurrent.thread
 class MainActivity : ComponentActivity() {
 
     private lateinit var cameraExecutor: ExecutorService
+    private val kalmanFilter = KalmanFilter()
     private val udpSocket = DatagramSocket()
     private val esp32Ip = "10.179.76.141" // ESP32 IP address
     private val udpPort = 4210
@@ -108,7 +109,7 @@ class MainActivity : ComponentActivity() {
     private fun startCamera() {
         setContent {
             TripodTrackerTheme {
-                CameraPreviewScreen(cameraExecutor) { angle ->
+                CameraPreviewScreen(cameraExecutor, kalmanFilter) { angle ->
                     sendUdpCommand(angle)
                 }
             }
@@ -139,6 +140,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun CameraPreviewScreen(
     executor: ExecutorService,
+    kalmanFilter: KalmanFilter,
     onTargetDetected: (Int) -> Unit
 ) {
     val context = LocalContext.current
@@ -217,6 +219,7 @@ fun CameraPreviewScreen(
                     isTrackingEnabled = !isTrackingEnabled 
                     if (!isTrackingEnabled) {
                         detectionResult = null
+                        kalmanFilter.reset()
                         onTargetDetected(90) // Center motor when off
                     }
                 }) {
@@ -297,7 +300,12 @@ fun CameraPreviewScreen(
                 .also {
                 it.setAnalyzer(executor) { imageProxy ->
                     if (isTrackingEnabled) {
-                        processImageProxy(objectDetector, imageProxy, cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA) { angle, result ->
+                        processImageProxy(
+                            objectDetector, 
+                            imageProxy, 
+                            cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA,
+                            kalmanFilter
+                        ) { angle, result ->
                             onTargetDetected(angle)
                             detectionResult = result
                         }
@@ -322,6 +330,7 @@ private fun processImageProxy(
     detector: com.google.mlkit.vision.objects.ObjectDetector,
     imageProxy: ImageProxy,
     isFrontCamera: Boolean,
+    kalmanFilter: KalmanFilter,
     onResult: (Int, MainActivity.DetectionResult?) -> Unit
 ) {
     val mediaImage = imageProxy.image
@@ -338,13 +347,19 @@ private fun processImageProxy(
 
                     // For now, track the first object
                     val targetObject = detectedObjects.first()
-                    val targetCenterX = targetObject.boundingBox.exactCenterX()
+                    val rawCenterX = targetObject.boundingBox.exactCenterX()
+
+                    // Apply Kalman Filter for prediction
+                    kalmanFilter.update(rawCenterX, System.currentTimeMillis())
+                    // Predict 100ms into the future to account for motor/network lag
+                    val predictedX = kalmanFilter.predictFuture(0.1f)
                     
                     val isRotated = rotation == 90 || rotation == 270
                     val imageWidth = if (isRotated) imageProxy.height else imageProxy.width
                     val imageHeight = if (isRotated) imageProxy.width else imageProxy.height
 
-                    var mappedAngle = ((targetCenterX / imageProxy.width) * 180).toInt()
+                    // Use predictedX for the motor command
+                    var mappedAngle = ((predictedX / imageProxy.width) * 180).toInt()
                     mappedAngle = 180 - mappedAngle
                     
                     val result = MainActivity.DetectionResult(
@@ -355,6 +370,7 @@ private fun processImageProxy(
                     )
                     onResult(mappedAngle, result)
                 } else {
+                    kalmanFilter.reset()
                     onResult(90, null)
                 }
             }
