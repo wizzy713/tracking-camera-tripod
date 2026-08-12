@@ -1,0 +1,500 @@
+08-12 15:08:40.079  1820 27497 D AGM: graph: configure_buffer_params: 267 Capture sess buf_sz 160 num_bufs 1024
+08-12 15:08:40.079 22911 14311 I SpeakerVerification: add list: /data/user/0/com.samsung.android.bixby.wakeup/files/sentence/hybrid/enroll_20260227_095024692.txt
+08-12 15:08:40.079 22911 14311 I SpeakerVerification: add list: /data/user/0/com.samsung.android.bixby.wakeup/files/sentence/hybrid/enroll_20260227_095024697.txt
+08-12 15:08:40.079 22911 14311 I SpeakerVerification: add list: /data/user/0/com.samsung.android.bixby.wakeup/files/sentence/hybrid/enroll_20260227_095024700.txt
+08-12 15:08:40.079 22911 14311 I SpeakerVerification: add list check type: mobile_dsp
+08-12 15:08:40.079 22911 14311 I SpeakerVerification: add list check type: mobile_dsp
+08-12 15:08:40.079 22911 14311 I SpeakerVerification: add list check type: mobile_dsp
+08-12 15:08:40.079 22911 14311 I SpeakerVerification: get enroll Device threshold device Type: mobile_dsp
+08-12 15:08:40.079 22911 14311 I sv16fx  : [SV Java_com_samsung_ai_SpeakerVerification_SpeakerVerification_verifyInitJNI:658] verify init mutex_value:1
+08-12 15:08:40.079 22911 14311 I sv16fx  : [SV sv_run_state_check:139] enroll init true : current: DEINIT, request: INIT
+08-12 15:08:40.079 22911 14311 I sv16fx  : [SV Java_com_samsung_ai_SpeakerVerification_SpeakerVerification_verifyInitJNI:681] VerifyInit start
+08-12 15:08:40.079 22911 14311 I sv16fx  : [SV Java_com_samsung_ai_SpeakerVerification_SpeakerVerification_verifyInitJNI:682] VerifyInit model path /data/user/0/com.samsung.android.bixby.wakeup/files/sentence/hybrid/hibixby
+08-12 15:08:40.079 22911 14311 I sv16fx  : [SV check_Keyword:348] set key word:hibixby(0)
+08-12 15:08:40.079 22911 14311 I sv16fx  : [SV sv_common_init:279] sv common init modelpath:/data/user/0/com.samsung.android.bixby.wakeup/files/sentence/hybrid/hibixby, filepath: /data/user/0/com.samsung.android.bixby.wakeup/files/sentence/hybrid
+08-12 15:08:40.079 22911 14311 E sv16fx  : [SV sv_common_init:282] sv instance create
+08-12 15:08:40.079 22911 14311 I sv16fx  : [SV sv_init_set:1759] create instance isTablet : 0, isNoDSP : 0, isBuds : 0, keyword:0
+08-12 15:08:40.079 22911 14311 I sv16fx  : [SV model_buffer_set:1685] model_buffer_set nomal: 0
+08-12 15:08:40.080 22911 14311 E sv16fx  : [SV model_buffer_set:1699] mSpeakerVerificationNet instance Create
+08-12 15:08:40.080 22911 14311 I sv16fx  : [SV modelbuffer_pathSet:70] modelbuffer_pathSet:/data/user/0/com.samsung.android.bixby.wakeup/files/sentence/hybrid/hibixby/model.tflite
+08-12 15:08:40.080 22911 14311 I sv16fx  : [SV modelbuffer_pathSet:71] modelbuffer_current_key_type:0
+08-12 15:08:40.080 22911 14311 I sv16fx  : [SV modelbuffer_pathSet:72] modelbuffer_create_mode:1
+08-12 15:08:40.080 22911 14311 I sv16fx  : [SV modelbufferSet:153] verify pre_type: 0, current_key_type: 0
+08-12 15:08:40.080 22911 14311 I sv16fx  : [SV modelInit:163] tflite modelpath : /data/user/0/com.samsung.android.bixby.wakeup/files/sentence/hybrid/hibixby/model.tflite
+08-12 15:08:40.080  1820 27497 D AGM: graph: configure_buffer_params: 324 exit, ret 0
+08-12 15:08:40.080  1820 27497 D AGM: graph: graph_fill_buf_info: 2048 metadata b4000072566b03f0
+08-12 15:08:40.080  1820 27497 D AGM: graph: graph_fill_buf_info: 2049 shmem_buf_info size 163840 - addr 0x72215b8000
+08-12 15:08:40.080  1820 27497 D AGM: graph: graph_fill_buf_info: 2048 metadata b4000072566d0b70
+08-12 15:08:40.080  1820 27497 D AGM: graph: graph_fill_buf_info: 2049 shmem_buf_info size 16 - addr 0x7222427000
+08-12 15:08:40.080  1820 27497 E PLUGIN: pcm: agm_pcm_mmap: 863 agm_pcm_mmap: boundary: 0x50000000, size_frames: 0x14000
+08-12 15:08:40.080  1820 27497 D AGM: graph: configure_buffer_params: 200 configure buf params already done
+08-12 15:08:40.080  1820 27497 D AGM: graph: graph_fill_buf_info: 2048 metadata b4000072566b03f0
+08-12 15:08:40.080  1820 27497 D AGM: graph: graph_fill_buf_info: 2049 shmem_buf_info size 163840 - addr 0x72215b8000
+08-12 15:08:40.080  1820 27497 I PAL: SoundTriggerEngineGsl: ProcessStartRecognition: 958: Resize mmap buffer size to 163840
+08-12 15:08:40.080  1820 27497 D AGM: graph: graph_set_config: 1146 entry graph_handle 0x147534c
+08-12 15:08:40.081  1820 27497 D AGM: graph: graph_set_config: 1154 exit, graph handle 0x147534c, ret 0
+08-12 15:08:40.081  1820 27497 D AGM: graph: graph_prepare: 837 entry graph_handle 0x147534c
+08-12 15:08:40.081  1820 27497 I AGM: graph: graph_prepare: 880 device obj:CODEC_DMA-LPAIF_VA-TX-0 in started state, start ref_cnt:1 miid 43b0 mid 7001024 tag c0000005
+08-12 15:08:40.081  1820 27497 D AGM: graph_module: configure_output_media_format: 759 entry mod tag c000000f miid 4fe3 mid 7001004
+08-12 15:08:40.081 22911 12056 I ISG_Wakeup_Verify: SetDebugMode: mode(0)
+08-12 15:08:40.081  1820 27497 D AGM: graph_module: configure_output_media_format: 890 exit, ret 0
+08-12 15:08:40.081  1820 27497 D AGM: graph: configure_buffer_params: 200 configure buf params already done
+08-12 15:08:40.081 22911 25042 I BWU@E2ECoreWrapper: prepared :: mConfig - null, config - Config { isDebugMode = false, sensitivity : 0, aecType = UNKNOWN, keyword = hibixby, deviceType = MOBILE}
+08-12 15:08:40.081 22911 25042 I KWV     : KWV verifyInit
+08-12 15:08:40.081 22911 25042 I FloatingFeatureReader: Read floating feature: SEC_FLOATING_FEATURE_BIXBY_SUPPORT_CUSTOM_WAKEUP, num: 2
+08-12 15:08:40.081 22911 25042 I FloatingFeatureReader: Read floating feature: SEC_FLOATING_FEATURE_BIXBY_CONFIG_BARGEIN_FUNCTION, num: 0
+08-12 15:08:40.081 22911 25042 I KWV     : KWV Config
+08-12 15:08:40.081 22911 25042 I KWV     : Version: 4.9.2
+08-12 15:08:40.081 22911 25042 I KWV     : Locale: en_US
+08-12 15:08:40.081 22911 25042 I KWV     : Recognition Engine = TENSORFLOW
+08-12 15:08:40.081 22911 25042 I KWV     : Audio buffer format = PCM_RAW
+08-12 15:08:40.081 22911 25042 I KWV     : Device Type = MOBILE
+08-12 15:08:40.081 22911 25042 I KWV     : Model Type = HI_BIXBY_WAKEUP
+08-12 15:08:40.081 22911 25042 I KWV     : Decoder Type = BARGEIN
+08-12 15:08:40.081 22911 25042 I KWV     : Verify Type = VERIFY
+08-12 15:08:40.081 22911 25042 I KWV     : Wakeup word = HiBixby
+08-12 15:08:40.081 22911 12056 I WakeupKwdDecoderBargein: State changed from NULL to INIT
+08-12 15:08:40.081 22911 25042 I FloatingFeatureReader: Read floating feature: SEC_FLOATING_FEATURE_BIXBY_SUPPORT_CUSTOM_WAKEUP, num: 2
+08-12 15:08:40.081 22911 12056 I WakeupKwdDecoderBargein: KWD version: 6.0.0(bargein decoder)
+08-12 15:08:40.081 22911 12056 I WakeupKwdDecoderBargein: Model size: 21504
+08-12 15:08:40.081 22911 25042 I FloatingFeatureReader: Read floating feature: SEC_FLOATING_FEATURE_BIXBY_CONFIG_BARGEIN_FUNCTION, num: 0
+08-12 15:08:40.081 22911 12056 I WakeupKwdFloatingFeatureBargein: Read floating feature: SEC_FLOATING_FEATURE_BIXBY_SUPPORT_CUSTOM_WAKEUP, num: 2
+08-12 15:08:40.081 22911 12056 I WakeupKwdDecoderBargein: setFloatingFeatureFirmware: 2
+08-12 15:08:40.081 22911 12056 I ISG_Wakeup_Verify: ISG_Wakeup_Verify_setFloatingFeature(): floating feature set to: 2
+08-12 15:08:40.081 22911 12056 I ISG_Wakeup_Verify: set floating feature num: 2
+08-12 15:08:40.081 22911 12056 I ISG_Wakeup_Verify: [KWD] Bargein - state from 0 to 2
+08-12 15:08:40.081 22911 12056 I ISG_Wakeup_Verify: ISG_Wakeup_Verify_init(): floating feature: 2
+08-12 15:08:40.081 22911 12056 I ISG_Wakeup_Verify: [KWD] Bargein - state from 2 to 1
+08-12 15:08:40.081 22911 12056 I ISG_Wakeup_Verify: ***** ISG_Wakeup_Verify_init Success *****
+08-12 15:08:40.081 22911 12056 I ISG_Wakeup_Verify: [KWD] Bargein - decision parameters: [20, 2, 0.50, 5, 0.70, 9, 4]
+08-12 15:08:40.081 22911 12056 I WakeupKwdDecoderBargein: State changed from INIT to READY
+08-12 15:08:40.081 22911 12056 I BWU@WakeupKwdCoreWrapper: setConfig: null -> Config { isDebugMode = false, sensitivity : 0, aecType = UNKNOWN, keyword = hibixby, deviceType = MOBILE}
+08-12 15:08:40.081 22911 12056 I BWU@WakeupKwdVerifier: prepare : true
+08-12 15:08:40.081  1820 27497 D AGM: graph: graph_prepare: 920 exit, ret 0
+08-12 15:08:40.081  1820 27497 D AGM: graph: graph_start: 934 entry graph_handle 0x147534c
+08-12 15:08:40.082  1820 27497 D AGM: graph: graph_start: 947 exit, ret 0
+08-12 15:08:40.082  1820 27497 D AGM: device: device_prepare: 414 PCM device 48 already in prepare state
+08-12 15:08:40.082  1820 27497 I AGM: device: device_start: 466 PCM device 48 already in start state
+08-12 15:08:40.082  1820 27497 I PAL: ResourceManager: getKernelConfigInfo: 15709: micbias=1, dmic clk=1(1,0,0), dmic status=1(1,0,0)
+08-12 15:08:40.082  1820 27497 D PLUGIN: pcm: agm_pcm_plugin_reset: 462 agm_pcm_plugin_reset: reset hw_ptr to 0 
+08-12 15:08:40.082  1820 27497 I PAL: SoundTriggerEngineGsl: UpdateState: 578: Engine state transitioned from 1 to 2
+08-12 15:08:40.082  1820 27497 I PAL: ResourceManager: releaseWakeLock: 1459: Releasing wake lock audio_pal_wl
+08-12 15:08:40.082  1820 27497 I PAL: SoundTriggerEngineGsl: ProcessStartRecognition: 979: Exit, status 0
+08-12 15:08:40.082  1820 27497 I PAL: SoundTriggerEngineGsl: StartRecognition: 1034: Exit, status = 0
+08-12 15:08:40.082  1820 27497 I PAL: StreamSoundTrigger: TransitTo: 2021: Stream instance 1: state transitioned from ST_STATE_LOADED to ST_STATE_ACTIVE
+08-12 15:08:40.082  1820 27497 I PAL: StreamSoundTrigger: HandleConcurrentStream: 643: LPI->NLPI switch takes 32ms
+08-12 15:08:40.082  1820 27497 I PAL: StreamSoundTrigger: HandleConcurrentStream: 648: Exit, status 0
+08-12 15:08:40.082  1820 27497 I PAL: API: pal_stream_open: 308: Exit. Value of stream_handle 0xb4000072e66cb6d0K, status 0 : PAL_STREAM_DEEP_BUFFER(2)
+08-12 15:08:40.082  1820 27497 D AHAL_StreamIn_QTI: configure : usecase: PCM_RECORD IoHandle:238 set pal_stream_set_buffer_size to 640 with count 4
+08-12 15:08:40.082  1820 27497 I PAL: API: pal_stream_start: 402: Enter. Stream handle 0xb4000072e66cb6d0K
+08-12 15:08:40.082  1820 27497 I PAL: SessionAlsaUtils: setDeviceMediaConfig: 1082: CODEC_DMA-LPAIF_RXTX-TX-3 rate ch fmt data_fmt 48000 2 2 1
+08-12 15:08:40.082 22911 25042 I FloatingFeatureReader: Read floating feature: SEC_FLOATING_FEATURE_BIXBY_SUPPORT_CUSTOM_WAKEUP, num: 2
+08-12 15:08:40.082 22911 25042 I FloatingFeatureReader: Read floating feature: SEC_FLOATING_FEATURE_BIXBY_CONFIG_BARGEIN_FUNCTION, num: 0
+08-12 15:08:40.082 22911 25042 I KwvDecodeWorker: verifyInit() State: NULL
+08-12 15:08:40.082 22911 25042 I KwvDecodeWorker: State changed to INIT
+08-12 15:08:40.082 22911 25042 I Wakeup_Kwv_Decoder_Native: verifyInit() start.
+08-12 15:08:40.083 22911 25042 I Wakeup_Kwv_Decoder_Native: Kwv Model: byte buffer, Size: 639688
+08-12 15:08:40.083 22911 25042 I Wakeup_Kwv_Decoder_Native: TFLiteModel Create From Model Data
+08-12 15:08:40.083  1820 27497 D AGM: graph: graph_open: 579 entry
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 79 *************************Metadata*************************
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 80 GKV size:4
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 83 key:0xb1000000, value:0xb1000001 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 83 key:0xab000000, value:0x1 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 83 key:0xa3000000, value:0xa3000001 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 83 key:0xad000000, value:0xad000a1 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 87 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: CKV count:1
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 90 key:0xa4000000, value:0xf 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 92 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 94 Property ID:134217744
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 95 property count:4
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 98 Property Values: 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 100 0x1 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 100 0x3 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 100 0x2 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 100 0x5 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 102 
+08-12 15:08:40.083  1820 27497 D AGM: metadata: metadata_print: 103 ****************Metadata Done***************************
+08-12 15:08:40.083  1820 27497 D AGM: metadata: 
+08-12 15:08:40.083  1820 27497 I AGM: graph: print_graph_alias: 2377 GKV Alias 82 | DeviceTX_Speaker_Mic_Instance_Instance_1_DevicePP_Tx_Bargein_AEC_StreamTX_PCM_Record
+08-12 15:08:40.083  1820 27497 D AGM: graph: graph_open: 707 miid 43ad mid 7001024 tag c0000005
+08-12 15:08:40.083  1820 27497 D AGM: graph: graph_open: 659 miid 46f5 mid 7001004 tag c000000f
+08-12 15:08:40.083  1820 27497 D AGM: graph: graph_open: 659 miid 46f4 mid 7001003 tag c0000010
+08-12 15:08:40.083  1820 27497 I GPR:    : vendor/qcom/proprietary/args/gpr/core/src/gpr_drv.c:__gpr_cmd_register_v2:931 GPR Register: Source Port is 8212 heap_index: 0
+08-12 15:08:40.083 22911 25042 I Wakeup_Kwv_Decoder_Native: verifyInit() success.
+08-12 15:08:40.083 22911 25042 I KwvDecodeWorker: State changed to READY
+08-12 15:08:40.083 22911 25042 I BWU@E2ECoreWrapper: setConfig: null -> Config { isDebugMode = false, sensitivity : 0, aecType = UNKNOWN, keyword = hibixby, deviceType = MOBILE}
+08-12 15:08:40.083 22911 25042 I BWU@E2ECoreWrapper: prepared : true
+08-12 15:08:40.083 22911 25042 I BWU@E2EVerifier: prepare : true
+08-12 15:08:40.085 22911  5147 W ContextImpl: Calling a method in the system process without a qualified user: android.app.ContextImpl.bindService:2227 android.content.ContextWrapper.bindService:934 c6.a.b:58 z5.b0.a:44 z5.d0.b:26 
+08-12 15:08:40.085 22911 14311 I sv16fx  : [SV modelInit:211] model dim :256
+08-12 15:08:40.086  1820 27497 E ACDB    : vendor/qcom/proprietary/args/acdb/src/acdb_command.c:AcdbCmdGetProcSubgraphCalDataPersist:8255 Error[19]: No calibration found
+08-12 15:08:40.086  1820 27497 E ACDB    : vendor/qcom/proprietary/args/acdb/src/acdb_command.c:AcdbCmdGetProcSubgraphCalDataPersist:8255 Error[19]: No calibration found
+08-12 15:08:40.086  1820 27497 E ACDB    : vendor/qcom/proprietary/args/acdb/src/acdb_command.c:AcdbCmdGetProcSubgraphCalDataPersist:8255 Error[19]: No calibration found
+08-12 15:08:40.086  1820 27497 D AGM: graph: graph_open: 739 graph_handle 0x447534c
+08-12 15:08:40.086  1820 27497 D AGM: graph: graph_open: 775 exit, ret 0
+08-12 15:08:40.086  1820 27497 I AgmIpc::Server: addSessionHandle sessionId 111 handle b4000072e66b7a10 
+08-12 15:08:40.086  1820 27497 D PLUGIN: pcm: agm_pcm_hw_params: 500 agm_pcm_hw_params: mode: 268435456
+08-12 15:08:40.086  1820 27497 E PAL: SessionAlsaPcm: start: 1252: miid : 46f9 id = 111, data CODEC_DMA-LPAIF_RXTX-TX-3
+08-12 15:08:40.086  1820 27497 I PAL: PayloadBuilder: payloadMFCConfig: 837: sample_rate:16000 bit_width:16 num_channels:1 Miid:18169
+08-12 15:08:40.086  1820 27497 I PAL: Session: updateCustomPayload: 675: customPayloadSize = 32
+08-12 15:08:40.086  1820 27497 D AGM: graph: graph_set_config: 1146 entry graph_handle 0x447534c
+08-12 15:08:40.086  1820 27497 D AGM: graph: graph_set_config: 1154 exit, graph handle 0x447534c, ret 0
+08-12 15:08:40.086  1820 27497 I PAL: Session: enableSilenceDetection: 1583: Registering For Silence Detection Events, eventId 8001ac3
+08-12 15:08:40.087  1820 27497 I PAL: Session: enableSilenceDetection: 1609: Registered for Silence Detection Event
+08-12 15:08:40.087  1820 27497 I PAL: Session: enableSilenceDetection: 1617: Registered CB for Silence Detection
+08-12 15:08:40.087  1820 27497 I PAL: Session: enableSilenceDetection: 1650: Sending Silence Detection Custom Payload
+08-12 15:08:40.087  1820 27497 I PAL: Session: updateCustomPayload: 675: customPayloadSize = 24
+08-12 15:08:40.087  1820 27497 D AGM: graph: graph_set_config: 1146 entry graph_handle 0x447534c
+08-12 15:08:40.087  1820 27497 D AGM: graph: graph_set_config: 1154 exit, graph handle 0x447534c, ret 0
+08-12 15:08:40.087  1820 27497 I PAL: Session: enableSilenceDetection: 1671: Silence Detection setup sucessfully 
+08-12 15:08:40.087  1820 27497 D AGM: graph: graph_prepare: 837 entry graph_handle 0x447534c
+08-12 15:08:40.087  1820 27497 D AGM: graph_module: configure_hw_ep_media_config: 636 entry mod tag c0000005 miid 43ad mid 7001024
+08-12 15:08:40.087  1820 27497 D AGM: graph_module: configure_hw_ep_media_config: 666 rate 48000 bw 16 ch 2, data_fmt 1
+08-12 15:08:40.087  1820 27497 D AGM: graph_module: configure_hw_ep_media_config: 676 exit, ret 0
+08-12 15:08:40.087  1820 27497 D AGM: graph_module: configure_codec_dma_ep: 253 cdc_dma intf cfg lpaif 1 indx 4 ch_msk 3
+08-12 15:08:40.087  1820 27497 D AGM: graph_module: configure_codec_dma_ep: 268 exit, ret 0
+08-12 15:08:40.087  1820 27497 D AGM: graph_module: configure_output_media_format: 759 entry mod tag c000000f miid 46f5 mid 7001004
+08-12 15:08:40.087  1820 27497 D AGM: graph_module: configure_output_media_format: 890 exit, ret 0
+08-12 15:08:40.087  1820 27497 D AGM: graph_module: configure_output_media_format: 759 entry mod tag c0000010 miid 46f4 mid 7001003
+08-12 15:08:40.087  1820 27497 D AGM: graph_module: configure_output_media_format: 890 exit, ret 0
+08-12 15:08:40.087  1820 27497 D AGM: graph: configure_buffer_params: 204 Enter
+08-12 15:08:40.087  1820 27497 D AGM: graph: configure_buffer_params: 267 Capture sess buf_sz 640 num_bufs 4
+08-12 15:08:40.087  1820 27497 I AGM: graph: configure_buffer_params: 301 Unsupported buffer mode : 0, Default to Blocking
+08-12 15:08:40.087  1820 27497 D AGM: graph: configure_buffer_params: 324 exit, ret 0
+08-12 15:08:40.093  1820 27497 D AGM: graph: graph_prepare: 920 exit, ret 0
+08-12 15:08:40.093  1820 27497 D AGM: graph: graph_start: 934 entry graph_handle 0x447534c
+08-12 15:08:40.096  1820 27497 D AGM: graph: graph_start: 947 exit, ret 0
+08-12 15:08:40.099  5080  5093 W WearableService: onGetService: Wear is not available on this device. Calling package: com.samsung.android.bixby.wakeup
+08-12 15:08:40.101 22911 27510 E MDW@Android@WearMgr: (WearMgr) com.google.android.gms.common.api.ApiException: 17: API: Wearable.API is not available on this device. Connection failed with: a{statusCode=API_UNAVAILABLE, resolution=null, message=null}
+08-12 15:08:40.103 32148 27508 I QJPEG   : [qjpeg] - decodeSubTP[9710] index : 92, sampleSize : 2, skipRST : 1, startMCU : 0, decW : 2000, decH : 1500, , x : 0, y : 1472, w : 2000, h : 28
+08-12 15:08:40.107 32148  7668 I SimbaDecoderJpeg: output img, WxH(2000x1500), cs(500)
+08-12 15:08:40.107 32148  7668 I PFW     : [1811:         BitmapUtils] decodeFile time = 55, bitmap = android.graphics.Bitmap@fba5105, file path =  #G$E2XK5HUAG8VFpcuF5KH7xHWhfyAxA3nnpyXJ5SUhavUhBB7QELQu0DDCzsAwtK7wYRGa1U 
+08-12 15:08:40.111  1820 27497 I PAL: ResourceManager: getKernelConfigInfo: 15709: micbias=1, dmic clk=3(1,1,0), dmic status=5(1,1,0)
+08-12 15:08:40.112 32148  7668 I PFW     : [1812:         BitmapUtils] smartCropBitmap# Legacy Smart Crop
+08-12 15:08:40.112 32148  7668 I PFW     : [1814:         BitmapUtils] getSmartCropBitmap# face detected
+08-12 15:08:40.112  1820 27497 I PAL: API: pal_stream_start: 470: Exit. status 0
+08-12 15:08:40.112  1820 27497 D AHAL_StreamIn_QTI: configure : usecase: PCM_RECORD IoHandle:238 : stream is configured
+08-12 15:08:40.112  1820 27497 I AHAL_StreamIn_QTI: configure : usecase: PCM_RECORD IoHandle:238: completed in 70.754 ms [pal_stream_open: 40.4656, ms pal_stream_start: 29.962 ms]
+08-12 15:08:40.133  2753  6035 D SemContextService: lock : requestToUpdate
+08-12 15:08:40.134  2753  6035 W CAE     : setCAProperty(ContextAwareService.java:509) - [setProperty 01] Mutex is locked for CH_LOC_TRIGGER
+08-12 15:08:40.134  2753  3666 D SensorService: setSContextDataLocked ints length 2 , byte length 4
+08-12 15:08:40.134  2753  3666 D SensorService: setSContextDataLocked 3db8
+08-12 15:08:40.135  1816  1816 I sensors-hal: inject_sensor_data:413, handle 1502 send inject
+08-12 15:08:40.135  1816  1816 I sensors-hal: sendContextData:346, sensor hal 4, (0xb8, 0x3d, 0x0, 0x0)
+08-12 15:08:40.135  1816  1816 I sensors-hal: sendContextData:131, change_location_trigger 4,184
+08-12 15:08:40.136  1816  1816 I sensors-hal: sendUserData:118, change_location_trigger h 184 m 61 s 0
+08-12 15:08:40.136  1816  1816 I sensors-hal: create_send_context_data:66, change_location_trigger create_send_context_data
+08-12 15:08:40.136  1816  1816 I sensors-hal: send_context_data:701, change_location_trigger, -244018566922240, 1320970896291267344, msgid:700, 1
+08-12 15:08:40.136  1816  1816 I sensors-hal: send_sync_sensor_request:515, send sync request
+08-12 15:08:40.136  1816  1816 I sensors-hal: send_sync_sensor_request:544, wait for notification of response
+08-12 15:08:40.136  1816  3663 I sensors-hal: qsh_conn_resp_cb:978, resp_value = 0 for change_location_trigger 
+08-12 15:08:40.136  1816  1816 I sensors-hal: send_sync_sensor_request:550, takes 0 ms to receive the response with 0
+08-12 15:08:40.137  2753  6035 W CAE     : setCAProperty(ContextAwareService.java:515) - [setProperty 02] Mutex is unlocked for CH_LOC_TRIGGER
+08-12 15:08:40.137  2753  6035 D SemContextService:     .requestToUpdate() : service = Location Change Trigger
+08-12 15:08:40.137  2753  6035 D SemContextService: unlock : requestToUpdate
+08-12 15:08:40.137  2753  6035 D SemContextManager:   .requestToUpdate : listener = com.android.server.location.nsflp.NSLocationMonitor$5@81fb008, service=Location Change Trigger
+08-12 15:08:40.137  5317 12151 I NewStopController_FLP: StateChecker, check stationary message
+08-12 15:08:40.142  2753  6035 W AppOps  : Noting op not finished: uid 10283 pkg com.google.android.gms code 113 startTime of in progress event=1786539962963
+08-12 15:08:40.144  2753  3766 D GnssLocationProvider_ex: SV Count : 3 / 3      (PRN, Constellation, Type, SNR, Used)
+08-12 15:08:40.144  2753  3766 D GnssLocationProvider_ex: (6, GPS, L1, 39,2, 1) (37, BEIDOU, L1, 33,6, 1) (30, BEIDOU, L1, 37,6, 1) 
+08-12 15:08:40.149  5317  5390 I GnssEngineManager_FLP: updateSatelliteStatus, top4=36, top6=36, visibleSv=3, usedSv=3, usedL5Sv=0 (usedGps=1, usedGlo=0, usedBds=2, usedGal=0)
+08-12 15:08:40.154  1816  3663 I sensors-hal: qsh_conn_event_cb:933, event[0] sensor:change_location_trigger  Wakeup, msg_id=1025, ts=26647218311
+08-12 15:08:40.154  1816  3663 I sensors-hal: handle_sns_client_event:85, change_location_trigger_event: msgid:1025
+08-12 15:08:40.154  1816  3663 I sensors-hal: handle_sns_client_event:108, change_location_trigger_event: 255, 255
+08-12 15:08:40.154  1816  3663 I sensors-hal: insert_awaking_events:879, smp2p_event, 25.change_location_trigger, msgid:1025
+08-12 15:08:40.155  2753  3661 D CAE     : onGetSensorHubData(SensorHubParserProvider.java:92) - onGetSensorHubData Event [event buffer len :15], AP_WAKEUP
+08-12 15:08:40.155  2753  3661 I CAE     : parse(SensorHubParserProvider.java:188) - buffer size = 15
+08-12 15:08:40.155  2753  3661 I CAE     : parse(SensorHubParserProvider.java:199) - 1, 1, 61, -1, 0, 2, 1, 0, 0, 0, 1, 0, 0, 0, 0,
+08-12 15:08:40.155  2753  3661 D CAE     : display(ContextProvider.java:375) - ================= CH_LOC_TRIGGER =================
+08-12 15:08:40.155  2753  3661 I CAE     : display(ContextProvider.java:391) - duration=[1], property=[1], result=[2], reserved=[0]
+08-12 15:08:40.156  2753  3658 D SemContextService: Service.updateContext() : service = Location Change Trigger
+08-12 15:08:40.156  2753  3767 D SemContextManager: onSemContextChanged() : event = Location Change Trigger
+08-12 15:08:40.156  2753  3767 D NSLocationMonitor: onSemContextChanged, activity : 1 result : 2 movement : 1
+08-12 15:08:40.167  2753  5739 D MotionRecognitionService: inject vibrator info = 0.0
+08-12 15:08:40.167  1816  1816 I sensors-hal: inject_sensor_data:309, accel - vib_onoff: 0
+08-12 15:08:40.167  1816  1816 I sensors-hal: inject_sensor_data:315, write vib_onoff: 0
+08-12 15:08:40.167  1919  1919 I SSC_DAEMON: handleSensorTestReqMsg:88, Sensor type :0, Msg type:3
+08-12 15:08:40.168 32148 32148 I PFW_G   : [1816:     BuildWidgetView] [83] - build Widget#  position = 31, count : 97, animation = true
+08-12 15:08:40.169  1919  4983 I SSC_DAEMON: ledCoverEventMotorEvent:24, motor: 0
+08-12 15:08:40.169  1919  4983 I SSC_DAEMON: accelMotorStateEvent:102, main: 1, 0
+08-12 15:08:40.169 32148 32148 I GlanceTemplate: [pictureframe] appWidgetDescription=true, appWidgetBackground=gradient, shape=none, appWidgetLabel=false, colors=ColorProviders(primary=[day=ff6750a4 night=ffd0bcff], onPrimary=[day=ffffffff night=ff381e72], primaryContainer=[day=ffeaddff night=ff4f378b], onPrimaryContainer=[day=ff21005d night=ffeaddff], background=[day=0 night=0], onBackground=[day=ff1c1b1f night=ffe6e1e5], surface=[day=fffffbfe night=ff1c1b1f], onSurface=[day=ff1c1b1f night=ffe6e1e5], surfaceVariant=[day=ffe7e0ec night=ff49454f], onSurfaceVariant=[day=ff49454f night=ffcac4d0], inverseOnSurface=[day=fff4eff4 night=ff313033], inverseSurface=[day=ff313033 night=ffe6e1e5]
+08-12 15:08:40.170 32148 32148 I PFW_G   : [1817:          HomeWidget] [83] - TemplateContent End# widget(wType = 5, size = medium)
+08-12 15:08:40.170 32148 32148 I GWT:GlanceSession: [pictureframe] receiveEvent: androidx.glance.appwidget.AppWidgetSession$UpdateGlanceState@cb49a71
+08-12 15:08:40.170 32148 32148 I GWT:AppWidgetSession: [pictureframe] Received UpdateGlanceState event for session(appWidget-111)
+08-12 15:08:40.170 32148 32148 I GWT:GlanceStateDefinition: [pictureframe] getDataStore: appWidget-111, file exist: true, PreferenceStateDefinition type: true
+08-12 15:08:40.171 32148 32148 I GWT:AppWidgetSession: [pictureframe] processEmittableTree / AppWidgetId(appWidgetId=83) / DefaultDispatcher-worker-2
+08-12 15:08:40.171 32148 32148 I GWT:GlanceStateDefinition: [pictureframe] getDataStore: appWidgetLayout-83, file exist: true, PreferenceStateDefinition type: false
+08-12 15:08:40.171  2753  7249 I AppWidgetServiceImpl: getAppWidgetInfo() 83, from 0
+08-12 15:08:40.184 32148 32148 I GWT:AppWidgetSession: [pictureframe] UpdateAppWidget / 83, android.widget.RemoteViews@9d88fe6 / lastViewId : 9
+08-12 15:08:40.184 32148 32148 I AppWidgetManager: updateAppWidget() appWidgetIds = [83]
+08-12 15:08:40.184  2753  7249 I AppWidgetServiceImpl: Null RemoteViews on updateAppWidgetIds
+08-12 15:08:40.185 32148 32148 I GWT:GlanceStateDefinition: [pictureframe] getDataStore: appWidgetLayout-83, file exist: true, PreferenceStateDefinition type: false
+08-12 15:08:40.185  2753  3806 D AppWidgetServiceImpl: handleNotifyUpdateAppWidget, appWidgetId = 83
+08-12 15:08:40.185 32148 32148 I GWT:AppWidgetSession: [pictureframe] widget-AppWidgetId(appWidgetId=111) collectAsState androidx.compose.runtime.internal.ComposableLambdaImpl@dd4a8d2
+08-12 15:08:40.186  2753  3806 D AppWidgetServiceImpl: Trying to notify widget update for package com.samsung.android.widget.pictureframe with widget id: 83
+08-12 15:08:40.186 32148 32148 I PFW_G   : [1818:          HomeWidget] [111] - TemplateContent Start - 1786540120186
+08-12 15:08:40.186  2753  7249 I AppWidgetServiceImpl: getAppWidgetInfo() 111, from 0
+08-12 15:08:40.186 32148  6326 I GWT:GlanceStateDefinition: [pictureframe] getDataStore: appWidget-111, file exist: true, PreferenceStateDefinition type: true
+08-12 15:08:40.186 32148 32148 I PFW_G   : [1820:          HomeWidget] [111] - getMediaData from cache size = 129
+08-12 15:08:40.186  4846  4846 I AppWidgetHost: updateAppWidgetView, appWidgetId = 83, v = null
+08-12 15:08:40.186 32148 32148 I PFW     : [1821:        BitmapLoader] loadBitmap  #G$E35b/e67itzeHlqcfxpq3e4a7jmquapcnwv77P9+Wqy+evrsXroeObs/79m7Hz9Z28/PifqqC8zaf7+52y+v2fsf/+ibX7/Q== , pos 31, wId = 111
+08-12 15:08:40.186 32148 32148 I PFW_G   : [1822:     BuildWidgetView] [111] - preLoad next position = 32
+08-12 15:08:40.186 32148 32148 I PFW     : [1823:        BitmapLoader] loadBitmapAsync wId = 111, pos = 32, isPresent = false, isActiveJob = false
+08-12 15:08:40.186 32148 32148 I PFW_G   : [1824:     BuildWidgetView] [111] - build Widget#  position = 31, count : 129, animation = true
+08-12 15:08:40.186 32148 15242 I PFW     : [1825:  SecMpQueryExecutor] query: {FACE_DATA} -> sec_media_id = 2147484920
+08-12 15:08:40.187 32148 32148 I GlanceTemplate: [pictureframe] appWidgetDescription=true, appWidgetBackground=color, shape=none, appWidgetLabel=false, colors=ColorProviders(primary=[day=ff6750a4 night=ffd0bcff], onPrimary=[day=ffffffff night=ff381e72], primaryContainer=[day=ffeaddff night=ff4f378b], onPrimaryContainer=[day=ff21005d night=ffeaddff], background=[day=0 night=0], onBackground=[day=ff1c1b1f night=ffe6e1e5], surface=[day=fffffbfe night=ff1c1b1f], onSurface=[day=ff1c1b1f night=ffe6e1e5], surfaceVariant=[day=ffe7e0ec night=ff49454f], onSurfaceVariant=[day=ff49454f night=ffcac4d0], inverseOnSurface=[day=fff4eff4 night=ff313033], inverseSurface=[day=ff313033 night=ffe6e1e5]
+08-12 15:08:40.187 32148 32148 I PFW_G   : [1827:          HomeWidget] [111] - TemplateContent End# widget(wType = 2, size = large)
+08-12 15:08:40.188 32148 32148 I GWT:AppWidgetSession: [pictureframe] processEmittableTree / AppWidgetId(appWidgetId=111) / DefaultDispatcher-worker-2
+08-12 15:08:40.188 32148 32148 I GWT:GlanceStateDefinition: [pictureframe] getDataStore: appWidgetLayout-111, file exist: true, PreferenceStateDefinition type: false
+08-12 15:08:40.188 22911 14311 I sv16fx  : [SV modelInit:219] model init success
+08-12 15:08:40.188 22911 14311 I sv16fx  : [SV model_buffer_set:1716] model dims:256
+08-12 15:08:40.188 22911 14311 I sv16fx  : [SV verifyModelinit:1187] Verify model init success
+08-12 15:08:40.188 22911 14311 I sv16fx  : [SV Java_com_samsung_ai_SpeakerVerification_SpeakerVerification_verifyInitJNI:716] VerifyInit End success
+08-12 15:08:40.188 22911 14311 I sv16fx  : [SV sv_run_state_check:155] enroll init true : current: INIT, request: INIT_DONE
+08-12 15:08:40.188 22911 14311 E BWU@SpeakerVerifier: samplePath : /data/user/0/com.samsung.android.bixby.wakeup/files/sentence/hybrid, modelPath : /data/user/0/com.samsung.android.bixby.wakeup/files/sentence/hybrid/hibixby
+08-12 15:08:40.188 22911 14311 I sv16fx  : [SV setDebugMode:1617] setDebugMode :0, path:/storage/emulated/0/myvoice/running//sv
+08-12 15:08:40.188 22911 14311 I BWU@SpeakerVerifier: prepare: true, sensitivity : MID, debugMode : false
+08-12 15:08:40.188  2753  7249 I AppWidgetServiceImpl: getAppWidgetInfo() 111, from 0
+08-12 15:08:40.188 22911 14311 I BWU@SwKwdDetector: Kwd Detector prepared : true
+08-12 15:08:40.188 22911 14311 I VoiceActivityDetector: init - check instance
+08-12 15:08:40.188 22911 14311 I VADLibrary: [VoiceActivityDetector](20) - construct(VER : 4251114)
+08-12 15:08:40.188 22911 14311 I VADLibrary: [VoiceActivityDetector](20) - init (mode : Wakeup, channel : 1, samplerate : 16000)
+08-12 15:08:40.188 22911 14311 I VADLibrary: [VADModeMultiExecutor](20) - SingleExecutor init
+08-12 15:08:40.188 22911 14311 I VADLibrary: [VADdevice] - getDevice (phone)
+08-12 15:08:40.188 22911 14311 I VADLibrary: [VADFactory] - create Default Model TF(0)
+08-12 15:08:40.189 22911 14311 I tflite  : Replacing 42 node(s) with delegate (TfLiteXNNPackDelegate) node, yielding 15 partitions.
+08-12 15:08:40.190 22911 14311 I VADLibrary: [DefaultMode](20) - init(BLS on)
+08-12 15:08:40.190 22911 14311 I VADLibrary: [PassThroughDecisionImpl] - construct
+08-12 15:08:40.190 22911 14311 I VoiceActivityDetector: Debug mode : OFF
+08-12 15:08:40.190 22911 14311 I BWU@VerifierAdapter: [bixby_latency] MARK::init :: true
+08-12 15:08:40.190 22911 14311 I BWU@BixbyAgentInfo: isSoundFeedbackEnabled start
+08-12 15:08:40.191 12008 12920 I BCL@Common: (SettingsProvider) query, content://com.samsung.android.bixby.agent.common.settings/sound_feedback_enabled
+08-12 15:08:40.191 12008 12920 I BCL@Common: (SdkInitializerDelegator) initialize()
+08-12 15:08:40.191 12008 12920 I BCL@BixbyApp: (SdkInitializer) initialize()
+08-12 15:08:40.191 22911 14311 I BWU@BixbyAgentInfo: isSoundFeedbackEnabled : true
+08-12 15:08:40.191 22911 14311 I BWU@WakeupSettings: isVoiceMatchEnabled: true
+08-12 15:08:40.191 22911 14311 I BWU@VoiceWakeupInfo: getWakeupLanguage(0) : en_US(defaultPref : en-US, keywordPref : en_US)
+08-12 15:08:40.191 22911 14311 I BWU@VoiceWakeupInfo: getWakeupDefaultKeyword Locale : en_US isSanxingxiaobeiKeywordSupport false
+08-12 15:08:40.191 22911 14311 I BWU@VoiceWakeupInfo: getWakeupLanguage(0) : en_US(defaultPref : en-US, keywordPref : en_US)
+08-12 15:08:40.191 22911 14311 I BWU@VoiceWakeupInfo: getWakeupKeywordType: hibixby
+08-12 15:08:40.191 22911 14311 I BWU@VerifierAdapter: [bixby_latency] MARK::SoundFeedback : true, VoiceMatch : true, Wakeup Keyword : hibixby
+08-12 15:08:40.191 22911 14311 E ISG_Wakeup_Verify: ***** ISG_Wakeup_Verify_Run Failed: Flat buffer (diffFlag = 0, value = 0) *****
+08-12 15:08:40.191 22911 14311 E ISG_Wakeup_Verify: ***** ISG_Wakeup_Verify_Run Failed: Flat buffer (diffFlag = 0, value = 0) *****
+08-12 15:08:40.191 22911 14311 E ISG_Wakeup_Verify: ***** ISG_Wakeup_Verify_Run Failed: Flat buffer (diffFlag = 0, value = 0) *****
+08-12 15:08:40.196 32148 15242 W Kumiho-Kumiho: isSupportedFormat: Format is not supported
+08-12 15:08:40.198 32148 32148 I GWT:AppWidgetSession: [pictureframe] UpdateAppWidget / 111, android.widget.RemoteViews@f256ef / lastViewId : 10
+08-12 15:08:40.198 32148 32148 I AppWidgetManager: updateAppWidget() appWidgetIds = [111]
+08-12 15:08:40.198  2753  7249 I AppWidgetServiceImpl: Null RemoteViews on updateAppWidgetIds
+08-12 15:08:40.198 32148 32148 I GWT:GlanceStateDefinition: [pictureframe] getDataStore: appWidgetLayout-111, file exist: true, PreferenceStateDefinition type: false
+08-12 15:08:40.199  2753  3806 D AppWidgetServiceImpl: handleNotifyUpdateAppWidget, appWidgetId = 111
+08-12 15:08:40.199  2753  3806 D AppWidgetServiceImpl: Trying to notify widget update for package com.samsung.android.widget.pictureframe with widget id: 111
+08-12 15:08:40.200  4846  4846 I AppWidgetHost: updateAppWidgetView, appWidgetId = 111, v = com.honeyspace.ui.common.widget.HoneyAppWidgetHostView{4133758 VFE...... R....... 0,0-1285,664} - span boundary: (1, 1) ~ (5, 7), appWidgetSize: 122, flag: 3, lastAppliedInfo: RemoteViewInfo(hashCode=130822120, packages=com.samsung.android.widget.pictureframe), cachedImageView: false
+08-12 15:08:40.200  4846  4846 I HoneySpace.HoneyAppWidgetHostView: [updateAppWidget id=111] receive event - isAnimating: false, remoteViews: android.widget.RemoteViews@b5678d2, hostView: @4133758
+08-12 15:08:40.200  4846  4846 I HoneySpace.HoneyAppWidgetHostView: [updateAppWidget id=111] start update job for widget
+08-12 15:08:40.200  4846  4846 I HoneySpace.HoneyAppWidgetHostView: [updateAppWidget id=111] update after transition animation
+08-12 15:08:40.200  4846  4846 I HoneySpace.HoneyAppWidgetHostView: [updateAppWidget id=111] perform updateAppWidget - remoteViews: android.widget.RemoteViews@b5678d2, hostView: @4133758
+08-12 15:08:40.200  4846  4846 I HoneySpace.WidgetHostViewContainer: Request to change label. appWidgetId: 111, label: Gallery
+08-12 15:08:40.201  4846  4846 I GWT:HostView: [launcher] Corner radius is not changed / null null
+08-12 15:08:40.201  4846  4846 I GWT:HostView: [launcher] [host-2.0.9] setBackgroundView: changed=false opacity=0 l=com.honeyspace.ui.common.widget.WidgetHostViewContainer$registerLabelUpdateListener$1@328aae8
+08-12 15:08:40.202  2753  2943 I system_server: Background concurrent mark compact GC freed 59MB AllocSpace bytes, 121(10MB) LOS objects, 26% free, 133MB/181MB, paused 2.071ms,3.911ms total 316.974ms
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(258, 240), itemPosition = Point(-433, 713)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (-433, 713), span = (4, 1), position = (-433, 713), size = (1032, 240)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(238, 229), itemPosition = Point(849, 990)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (849, 990), span = (2, 1), position = (849, 990), size = (476, 229)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(236, 253), itemPosition = Point(859, 407)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (859, 407), span = (2, 2), position = (859, 407), size = (472, 506)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(257, 230), itemPosition = Point(300, 112)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (300, 112), span = (4, 1), position = (300, 112), size = (1028, 230)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(201, 208), itemPosition = Point(522, 1285)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (522, 1285), span = (4, 2), position = (522, 1285), size = (804, 416)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(226, 234), itemPosition = Point(422, 1799)
+08-12 15:08:40.206  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (422, 1799), span = (4, 2), position = (422, 1799), size = (904, 468)
+08-12 15:08:40.207  4846  4846 I GWT:ViewColorApplier: [launcher] traverse view=com.honeyspace.ui.common.widget.HoneyAppWidgetHostView{4133758 VFE...... R.....ID 0,0-1285,664} - span boundary: (1, 1) ~ (5, 7), appWidgetSize: 122, flag: 3, lastAppliedInfo: RemoteViewInfo(hashCode=190216402, packages=com.samsung.android.widget.pictureframe), cachedImageView: false baseWidgetColor=0 updateColor=false showShadow=false
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(273, 253), itemPosition = Point(-183, 1664)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (-183, 1664), span = (2, 1), position = (-183, 1664), size = (546, 253)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(258, 240), itemPosition = Point(-433, 713)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (-433, 713), span = (4, 1), position = (-433, 713), size = (1032, 240)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(238, 229), itemPosition = Point(849, 990)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (849, 990), span = (2, 1), position = (849, 990), size = (476, 229)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(236, 253), itemPosition = Point(859, 407)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (859, 407), span = (2, 2), position = (859, 407), size = (472, 506)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(257, 230), itemPosition = Point(300, 112)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (300, 112), span = (4, 1), position = (300, 112), size = (1028, 230)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(201, 208), itemPosition = Point(522, 1285)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (522, 1285), span = (4, 2), position = (522, 1285), size = (804, 416)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(226, 234), itemPosition = Point(422, 1799)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (422, 1799), span = (4, 2), position = (422, 1799), size = (904, 468)
+08-12 15:08:40.207  4846  4846 I TraceUtils: widget onLayout 111
+08-12 15:08:40.207  4846  4846 I GWT:HostView: [launcher] Corner radius is not changed / null null
+08-12 15:08:40.207  4846  4846 I GWT:HostView: [launcher] [host-2.0.9] setBackgroundView: changed=false opacity=0 l=com.honeyspace.ui.common.widget.WidgetHostViewContainer$registerLabelUpdateListener$1@328aae8
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: setup, scaledUnitSize = Point(273, 253), itemPosition = Point(-183, 1664)
+08-12 15:08:40.207  4846  4846 I HoneySpace.FreeGridLayoutParams: cellXY = (-183, 1664), span = (2, 1), position = (-183, 1664), size = (546, 253)
+08-12 15:08:40.209 32148 15242 I SimbaDecoderHeif: cover(4000x2252:634:0)(ref 512x512), thm(512x288:634:0), gnm(0x0:0:0)(ref 0:0)
+08-12 15:08:40.209  4009  4009 D SamsungBatteryMeterDrawable: onBatteryLevelChanged isSomethingChanged: true
+08-12 15:08:40.209  4009  4009 D SamsungBatteryMeterDrawable: onBatteryLevelChanged isSomethingChanged: true
+08-12 15:08:40.209  4009  4009 D SamsungBatteryMeterDrawable: onBatteryLevelChanged isSomethingChanged: true
+08-12 15:08:40.209  4009  4009 D SamsungBatteryMeterDrawable: onBatteryLevelChanged isSomethingChanged: true
+08-12 15:08:40.210 32148 15242 I SimbaDecoderHeif: success to get exif data (0:730)
+08-12 15:08:40.210 32148 15242 I SimbaDecoderHeif: exist icc data(634) in cover
+08-12 15:08:40.210 32148 15242 I Maruchi : real wxh(4000x2252), grid wxh(512x512:40), out (2000x1126:500)
+08-12 15:08:40.210 32148 15242 I Maruchi : Number of CPU cores: 8
+08-12 15:08:40.211  4009  4009 W View    : requestLayout() improperly called by android.widget.FrameLayout{fb08559 V.E...... ......I. 0,0-1440,3120 #14} during layout: running second layout pass
+08-12 15:08:40.211  4009  4009 W View    : requestLayout() improperly called by com.android.systemui.qs.QSTouchAwareFrameLayout{2a0151e V.E...... ......ID 0,212-1440,3120 #7e0a0a4c com.android.systemui:id/qs_frame} during layout: running second layout pass
+08-12 15:08:40.211  4009  4009 W RefactorFlag: New code path expects SceneContainerFlag to be enabled.
+08-12 15:08:40.221 32148 27522 I MaruchiVUI: VUI 1, 1, 5, 6, 6 : CS 1
+08-12 15:08:40.223 32148 27520 I MaruchiVUI: VUI 1, 1, 5, 6, 6 : CS 1
+08-12 15:08:40.238 32148 15242 I MaruchiVUI: VUI 1, 1, 5, 6, 6 : CS 1
+08-12 15:08:40.241 32148 27521 I MaruchiVUI: VUI 1, 1, 5, 6, 6 : CS 1
+08-12 15:08:40.244 32148 27523 I MaruchiVUI: VUI 1, 1, 5, 6, 6 : CS 1
+08-12 15:08:40.250 32148 27524 I MaruchiVUI: VUI 1, 1, 5, 6, 6 : CS 1
+08-12 15:08:40.275 32148 27526 I MaruchiVUI: VUI 1, 1, 5, 6, 6 : CS 1
+08-12 15:08:40.282 32148 27525 I MaruchiVUI: VUI 1, 1, 5, 6, 6 : CS 1
+08-12 15:08:40.297  2460 27415 I NuPlayerRenderer: [audio] notifyEOS() End of Stream, delayUs : 0
+08-12 15:08:40.297  2460 27412 V NuPlayer: reached audio EOS
+08-12 15:08:40.297  2460 27412 V NuPlayerDriver: notifyListener_l(0xb400007b920f4d80), playback complete, loop setting(0, 0)
+08-12 15:08:40.297  2460 27412 V MediaPlayerService: [12] notify (2, 0, 0)
+08-12 15:08:40.298  2460 27412 V NuPlayer: updatePlaybackTimer(stop)  time        1274760076855 (onPause)
+08-12 15:08:40.298  4009  4667 V MediaPlayerNative: message received msg=2, ext1=0, ext2=0
+08-12 15:08:40.298  4009  4667 V MediaPlayerNative: playback complete
+08-12 15:08:40.298  2460 27412 V NuPlayer: updatePlaybackTimer()  log            1278942969
+08-12 15:08:40.298  2460 27412 I GenericSource: pause
+08-12 15:08:40.298  2460 27415 I NuPlayerRenderer: onPause
+08-12 15:08:40.298  2460 27415 I MediaClock: setPlaybackRate rate : 0.000000
+08-12 15:08:40.299  2460 27415 V AudioSink: stop
+08-12 15:08:40.299  2460 27413 I GenericSource: kWhatPause
+08-12 15:08:40.299  2460 25107 V MediaPlayerService: [12] enableAudioDeviceCallback, 0
+08-12 15:08:40.299  2460 25107 V AudioSink: enableAudioDeviceCallback, 0
+08-12 15:08:40.299  2460 27412 V MediaPlayerService: [12] notify (211, 0, 0)
+08-12 15:08:40.299  4009  5001 V MediaPlayerNative: message received msg=211, ext1=0, ext2=0
+08-12 15:08:40.299  2753  2753 D MediaSessionService: Audio playback is changed, config=AudioPlaybackConfiguration piid:791 deviceIds:[3] type:android.media.MediaPlayer u/pid:10051/4009 state:stopped attr:AudioAttributes: usage=USAGE_ASSISTANCE_SONIFICATION content=CONTENT_TYPE_SONIFICATION flags=0x800(FLAG_MUTE_HAPTIC)  tags=stv_charger_connection;FAST_TRACK bundle=null sessionId:857 mutedState:streamVolume  FormatInfo{isSpatialized=false, channelMask=0x3, sampleRate=48000}, removed=false
+08-12 15:08:40.299  2753  2753 D MediaSessionStack: updateMediaButtonSessionIfNeeded, callers=com.android.server.media.AudioPlayerStateMonitor$MessageHandler.handleMessage:19 android.os.Handler.dispatchMessage:132 
+08-12 15:08:40.299  2753  2753 D MediaSessionStack: updateMediaButtonSessionIfNeeded, skipping uid=10051
+08-12 15:08:40.299  2753  2753 D MediaSessionStack: updateMediaButtonSessionIfNeeded, skipping uid=10380
+08-12 15:08:40.299  2753  2753 D MediaSessionStack: updateMediaButtonSessionIfNeeded, skipping uid=10379
+08-12 15:08:40.299  2753  3825 D MediaRouterService: onAudioPlayerActiveStateChanged: uid=10051, active=false, delaying
+08-12 15:08:40.300 22911 23053 I BWU@AudioPlaybackControlManager: stopAECRecording
+08-12 15:08:40.300 22911 23053 I BWU@AecWakeupService: IMediaControlListener - onStopRecording() appLaunch false
+08-12 15:08:40.300  6937  6937 I [MCFDs]_MediaStateObserver: updateFinalState - (configs:12) (CONFIG_STATE:1) (FINAL_STATE:1)
+08-12 15:08:40.300  4009 27410 D PowerUI.Notification: onCompletion() no need to abandon AudioFocus
+08-12 15:08:40.300  4009 27410 D PowerUI.Notification: onCompletion queue size=0
+08-12 15:08:40.300  4009 27410 D PowerUI.Notification: in onCompletion quitting looper Looper (Thread-101, tid 320) {19f02e8}
+08-12 15:08:40.300  4009 27410 I NotificationPlayer: About to release MediaPlayer piid:791 due to onCompletion
+08-12 15:08:40.300 22911 23053 I DisplayManagerUtils: Ph_DEFAULT getState : 2 [VF-T-L] 
+08-12 15:08:40.301  4009  4932 D SoundCraft.PlayingAudioConditionHandler: onPlaybackConfigChanged : lastStartedPackageName=null, lastStartedUid=-1, newStartedUid=-1, newStartPackageName=null, thread=Thread[RoutineHandlerThread,5,main]
+08-12 15:08:40.301 22911 23053 W BWU@AudioPlaybackControlManager: ignore isMusicPlaying - 0 configs counts - 11 mIsAecRecording false
+08-12 15:08:40.302  4009  4932 D SoundCraft.PlayingAudioConditionHandler: onPlaybackConfigChanged : lastStartedPackageName=null, lastStartedUid=-1, newStartedUid=-1, newStartPackageName=null, thread=Thread[RoutineHandlerThread,5,main]
+08-12 15:08:40.302  6937  6937 I [MCFDs]_MediaStateObserver: updateFinalState - (configs:11) (CONFIG_STATE:1) (FINAL_STATE:1)
+08-12 15:08:40.302  4009 27410 V MediaPlayer: resetDrmState:  mDrmInfo=null mDrmProvisioningThread=null mPrepareDrmInProgress=false mActiveDrmScheme=false
+08-12 15:08:40.302  4009 27410 V MediaPlayer: cleanDrmObj: mDrmObj=null mDrmSessionId=null
+08-12 15:08:40.302  4009 27410 V MediaPlayer-JNI: release
+08-12 15:08:40.302 32148  7668 I PFW     : [1830:        BitmapLoader] job Completed wId : 83, key:  #G$E35b/e67itzeHlqcfxpq3e4a7jmquOj+PJ5Y/L6a++y6v4/Jiw+/yat5X9mrDz/p+qoLzNp/v7mLPz+J+3/f+JvPk= 
+08-12 15:08:40.302  4009 27410 V MediaPlayerNative: setListener
+08-12 15:08:40.303  4009 27410 V MediaPlayerNative: disconnect
+08-12 15:08:40.303  2460 25107 V MediaPlayerService: disconnect(12) from AttributionSource AttributionSourceState{pid: 4009, uid: 10051, deviceId: 0, packageName: com.android.systemui, attributionTag: (null), token: binder:0xb400007b220fc090, renouncedPermissions: [], next: []}
+08-12 15:08:40.303  2460 25107 D NuPlayerDriver: reset(0xb400007b920f4d80) at state 6
+08-12 15:08:40.303  2460 25107 V NuPlayerDriver: updateMetrics(0xb400007b920f4d80) from reset at state 6
+08-12 15:08:40.304 11977 14949 I SAContentProvider: insert() : content value is VOICE_BOOST_EFFECT=0
+08-12 15:08:40.304 11977 14949 I AudioPathManager: loadAudioPath() : loaded audio path is speaker (0)
+08-12 15:08:40.304 11977 14949 I SAContentProvider: insertForVoiceBoost() : inserted mode is 0
+08-12 15:08:40.304 11977 14949 I AudioPathManager: loadAudioPath() : loaded audio path is speaker (0)
+08-12 15:08:40.304 11977 14949 I EffectManager: setEffectVoiceBoostAll() : parameter is 0,0,0,0,0,0,0,0
+08-12 15:08:40.304 11977 14949 I AudioManager: setParameters keyValuePairs = g_voice_booster_preset_all=0,0,0,0,0,0,0,0
+08-12 15:08:40.304  2460 25107 V NuPlayer: updateInternalTimers()
+08-12 15:08:40.304  2460 25107 V NuPlayer: updatePlaybackTimer(snap)  time                    0 (updateInternalTimers)
+08-12 15:08:40.304  2460 25107 V NuPlayer: updateRebufferingTimer(snap)  time                    0 (exiting 0)
+08-12 15:08:40.304  2460 25107 V NuPlayerDriver: logMetrics(0xb400007b920f4d80) from reset at state 6
+08-12 15:08:40.304  2460 27412 V NuPlayer: kWhatReset
+08-12 15:08:40.304  2460 27412 I MediaMonitor: stop time 1276039049
+08-12 15:08:40.304  2460 27412 V NuPlayer: setDecoderBooster enable = No
+08-12 15:08:40.304  2460 27412 V NuPlayer: updatePlaybackTimer(stop)  time                    0 (kWhatReset)
+08-12 15:08:40.304  2460 27412 V NuPlayer: updateRebufferingTimer(stop)  time                    0 (exiting 1)
+08-12 15:08:40.304  2460 27412 V NuPlayer: performDecoderFlush audio=2, video=2
+08-12 15:08:40.304  2460 27412 V NuPlayer: [audio] flushDecoder needShutdown=1
+08-12 15:08:40.304  2460 27412 V NuPlayer: postponing action mFlushingAudio=2, mFlushingVideo=0
+08-12 15:08:40.304  2460 27416 I NuPlayerRenderer: flush audio, notifyComplete 1, shutdown Yes
+08-12 15:08:40.307  1924 12144 V APM_AudioPolicyManager: setAudioPolicyConfig: g_voice_booster_preset_all=0,0,0,0,0,0,0,0
+08-12 15:08:40.307  1924 12144 I SecAudioParamPolicy: g_voice_booster_preset_all: 0 
+08-12 15:08:40.307  1924 12905 I AudioEffectExtendAction: get g_voice_booster_preset_all received 0,0,0,0,0,0,0,0
+08-12 15:08:40.307  1924 12905 I AudioFlinger: enableVoiceBooster_l all preset
+08-12 15:08:40.307  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.307  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.307  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.307  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.307  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.307  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 10000, index 7
+08-12 15:08:40.307  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.307  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 10000, index 7
+08-12 15:08:40.307  2460 27415 I NuPlayerRenderer: flushing audio
+08-12 15:08:40.307  2460 27415 I NuPlayerRenderer: onFlush mAudioDrainGeneration : 2
+08-12 15:08:40.307  2460 27415 V AudioSink: flush
+08-12 15:08:40.307  2460 27415 V AudioSink: stop
+08-12 15:08:40.307  2460 27416 D NuPlayerRenderer: signalTimeDiscontinuity() mHasAudio = 0 , mHasVideo = 0
+08-12 15:08:40.307  2460 27412 V NuPlayer: renderer audio flush completed.
+08-12 15:08:40.307  2460 27417 I CCodec  : [c2.android.vorbis.decoder] state->set(FLUSHING)
+08-12 15:08:40.307  2460 27417 I CCodec  : [c2.android.vorbis.decoder] state->set(FLUSHED)
+08-12 15:08:40.307  2460 27412 V NuPlayer: decoder audio flush completed
+08-12 15:08:40.307  2460 27412 V NuPlayer: initiating audio decoder shutdown
+08-12 15:08:40.307  2460 27417 I CCodec  : [c2.android.vorbis.decoder] state->set(RELEASING)
+08-12 15:08:40.308  2460 27531 D CCodec  : hold CodecLooper(1) until release
+08-12 15:08:40.308  2460 27531 I CCodec  : [release][3747] component -> surface
+08-12 15:08:40.308  2460 27412 V NuPlayer: audio shutdown completed
+08-12 15:08:40.308  2460 27412 V NuPlayer: both audio and video are flushed now.
+08-12 15:08:40.308  2460 27412 V NuPlayer: performReset
+08-12 15:08:40.308  2460 27412 V NuPlayer: updatePlaybackTimer(stop)  time                    0 (performReset)
+08-12 15:08:40.308  2460 27412 V NuPlayer: updateRebufferingTimer(stop)  time                    0 (exiting 1)
+08-12 15:08:40.309 22911 14311 I ISG_Wakeup_Verify: [KWD] Bargein - scores: [0.0000, 0.0000, t(0)], [0.0000, 0.0000, t(4)], [0.0000, 0.0000, t(8)], [0.0000, 0.0000, t(12)], [0.0000, 0.0000, t(16)], RMS: 18
+08-12 15:08:40.309  2460 27412 D NuPlayerDriver: notifyResetComplete(0xb400007b920f4d80)
+08-12 15:08:40.309  2460 27531 I CCodec  : [c2.android.vorbis.decoder] state->set(RELEASED)
+08-12 15:08:40.309  2460 27417 I Codec2Client: Component destructing
+08-12 15:08:40.309  2598  7105 I libbinder.BpBinder: onLastStrongRef automatically unlinking death recipients for descriptor: 'android.hardware.media.bufferpool2.IClientManager'
+08-12 15:08:40.310  2460 27417 I MediaCodec: Codec shutdown complete
+08-12 15:08:40.310 11977 14949 I LocalBroadcastManager: sendLocalBroadcast() : action is 1
+08-12 15:08:40.310  2460 25107 V NuPlayerDriver: ~NuPlayerDriver(0xb400007b920f4d80)
+08-12 15:08:40.310  2460 27416 I NuPlayerDecoder: kWhatAsyncReleaseComplete
+08-12 15:08:40.310  2460 25107 V NuPlayerDriver: updateMetrics(0xb400007b920f4d80) from destructor at state 0
+08-12 15:08:40.310  2460 25107 V NuPlayer: updateInternalTimers()
+08-12 15:08:40.310  2460 25107 V NuPlayer: updatePlaybackTimer(snap)  time                    0 (updateInternalTimers)
+08-12 15:08:40.310  2460 25107 V NuPlayer: updateRebufferingTimer(snap)  time                    0 (exiting 0)
+08-12 15:08:40.310  2460 25107 V NuPlayerDriver: logMetrics(0xb400007b920f4d80) from destructor at state 0
+08-12 15:08:40.310  2460 25107 V NuPlayerDriver: nothing to record (only 3 fields)
+08-12 15:08:40.310  2460 27416 I CCodecBufferChannel: CCodecBufferChannel destructing c2.android.vorbis.decoder#618
+08-12 15:08:40.310  4009 27410 V MediaPlayerNative: destructor
+08-12 15:08:40.310  4009 27410 V MediaPlayerNative: disconnect
+08-12 15:08:40.310  2460 12849 V MediaPlayerService: Client(12) destructor AttributionSource = AttributionSourceState{pid: 4009, uid: 10051, deviceId: 0, packageName: com.android.systemui, attributionTag: (null), token: binder:0xb400007b220fc090, renouncedPermissions: [], next: []}
+08-12 15:08:40.310  2460 12849 V AudioSink: +++ close
+08-12 15:08:40.310  2460 12849 V AudioSink: --- close
+08-12 15:08:40.311  2598  7105 D AidlBufferPool: Destruction - bufferpool2 0xb400006ffc395bf8 cached: 0/0M, 0/0% in use; allocs: 0, 0% recycled; transfers: 0, 0% unfetched
+08-12 15:08:40.311  2460 12849 V MediaPlayerService: disconnect(12) from AttributionSource AttributionSourceState{pid: 4009, uid: 10051, deviceId: 0, packageName: com.android.systemui, attributionTag: (null), token: binder:0xb400007b220fc090, renouncedPermissions: [], next: []}
+08-12 15:08:40.312 11977 14949 I SAContentProvider: getAudioPathByQuery() : requested path is unknown (-1)
+08-12 15:08:40.312  2460 27416 W AMessage: failed to post message as target looper for handler 0 is gone.
+08-12 15:08:40.312 11977 14949 I AudioPathManager: loadAudioPath() : loaded audio path is speaker (0)
+08-12 15:08:40.312 11977 14949 I SAContentProvider: query() : result is 0
+08-12 15:08:40.313  4009  5012 I AudioEraserUtils: [Set] Audio eraser strength = 0
+08-12 15:08:40.313  4009  4422 I AudioEraser: parse: Result -> 0
+08-12 15:08:40.313  4009  4422 D AudioEraser: Icon update skip due to no playback state
+08-12 15:08:40.314 11977 14948 I SAContentProvider: insert() : content value is VOICE_BOOST_EFFECT=0
+08-12 15:08:40.314 11977 14948 I AudioPathManager: loadAudioPath() : loaded audio path is speaker (0)
+08-12 15:08:40.314 11977 14948 I SAContentProvider: insertForVoiceBoost() : inserted mode is 0
+08-12 15:08:40.314 11977 14948 I AudioPathManager: loadAudioPath() : loaded audio path is speaker (0)
+08-12 15:08:40.314 11977 14948 I EffectManager: setEffectVoiceBoostAll() : parameter is 0,0,0,0,0,0,0,0
+08-12 15:08:40.314 11977 14948 I AudioManager: setParameters keyValuePairs = g_voice_booster_preset_all=0,0,0,0,0,0,0,0
+08-12 15:08:40.314  1924 12144 V APM_AudioPolicyManager: setAudioPolicyConfig: g_voice_booster_preset_all=0,0,0,0,0,0,0,0
+08-12 15:08:40.314  1924 12144 I SecAudioParamPolicy: g_voice_booster_preset_all: 0 
+08-12 15:08:40.314  1924 12905 I AudioEffectExtendAction: get g_voice_booster_preset_all received 0,0,0,0,0,0,0,0
+08-12 15:08:40.314  1924 12905 I AudioFlinger: enableVoiceBooster_l all preset
+08-12 15:08:40.314  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.314  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.314  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.314  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.314  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.314  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 10000, index 7
+08-12 15:08:40.314  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 2, index 0
+08-12 15:08:40.314  1924 12905 I AudioFlinger: updateVoiceBoosterState curDevice 10000, index 7
+08-12 15:08:40.314 11977 14948 I LocalBroadcastManager: sendLocalBroadcast() : action is 1
+08-12 15:08:40.317  4009  5012 I AudioEraserUtils: [Set] Audio eraser strength = 0
+08-12 15:08:40.317 11977 14948 I SAContentProvider: getAudioPathByQuery() : requested path is unknown (-1)
+08-12 15:08:40.317 11977 14948 I AudioPathManager: loadAudioPath() : loaded audio path is speaker (0)
+08-12 15:08:40.317 11977 14948 I SAContentProvider: query() : result is 0
+08-12 15:08:40.317  4009  4407 I AudioEraser: parse: Result -> 0
+08-12 15:08:40.317  4009  4407 D AudioEraser: Icon update skip due to no playback state

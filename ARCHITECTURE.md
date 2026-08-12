@@ -1,58 +1,47 @@
-# ARCHITECTURE.md - CamX Technical Guide
+# CamX Architecture and Technical Specification
 
-This document explains how CamX works, its folder structure, and the logic behind the automated tracking system.
+This document provides a technical overview of the CamX system architecture, the localization algorithms used, and the hardware communication layer.
 
-## 📂 Project Structure
+## System Components and Folder Structure
 
-- **`app/src/main/java/com/example/tripodtracker/`**:
-    - **`MainActivity.kt`**: The core of the app. It handles the UI (Compose), CameraX setup, and coordinates the AI detection and hardware communication.
-    - **`KalmanFilter.kt`**: Contains the math for predicting where the subject will be next. It smooths out "jittery" camera data and provides trajectory estimation.
-    - **`NsdHelper.kt`**: Helps the phone find your ESP32 on the Wi-Fi network using Network Service Discovery.
-    - **`LogManager.kt`**: Records tracking coordinates and saves them as a CSV file for analysis in Excel.
-- **`app/src/main/assets/`**:
-    - **`hand_landmarker.task`**: The AI model for detecting hand gestures.
-- **`gradle/`**:
-    - Contains dependency management via `libs.versions.toml`.
+The project follows a modular structure to separate concerns between the UI, the vision engine, and the hardware communication.
 
----
+- src/main/java/com/example/tripodtracker/:
+    - MainActivity.kt: Orchestrates the Android component lifecycle, Compose UI, and high-level application state transitions.
+    - KalmanFilter.kt: Implementation of a Discrete Kalman Filter for state estimation (Position/Velocity) of the tracked subject.
+    - UdpSender.kt: Encapsulates a DatagramSocket within a dedicated background thread to handle non-blocking network I/O.
+    - NsdHelper.kt: Manages the registration and discovery of network services using the mDNS protocol.
+    - LogManager.kt: Provides thread-safe recording of subject coordinates to the local file system in CSV format.
 
-## 🛰️ Localisation & Tracking Algorithm
+## Localization Algorithm
 
-CamX uses a multi-stage pipeline to keep the subject centered:
+The core tracking algorithm is based on the recursive Bayesian estimation of the subject's center-pixel coordinates.
 
-### 1. Perception (AI Detection)
-The app runs two AI models concurrently:
-- **Object Detection (ML Kit)**: Identifies people in the frame and returns bounding boxes with persistent tracking IDs.
-- **Hand Landmarking (MediaPipe)**: Detects 21 key points on the hand to recognize gestures.
+### 1. Object Detection (Perception)
+Subject detection is performed using a specialized model from Google ML Kit. This provides a rectangular bounding box defined by [top, left, bottom, right] coordinates in the image coordinate system.
 
-### 2. Localization (Center Pixel Tracking)
-- **Calculation**: The app calculates the exact `X` and `Y` center pixels of the subject's bounding box.
-- **Normalization**: Coordinates are based on the camera resolution (e.g., 640x480) for precision.
+### 2. Center-Pixel Calculation
+The subject's position is localized by calculating the geometric center of the bounding box:
+X_raw = (box.left + box.right) / 2
+Y_raw = (box.top + box.bottom) / 2
 
-### 3. Estimation (Predictive Kalman Filter)
-To account for motor and network lag, a **Kalman Filter** is applied to the `X` coordinate:
-- It tracks **Position** and **Velocity**.
-- **Prediction**: It estimates where the subject will be **100ms in the future**.
-- This "lead" ensures the tripod stays ahead of the motion rather than lagging behind.
+### 3. Trajectory Prediction (Kalman Filter)
+To compensate for motor latency and network delay, a 1D Kalman Filter is applied to the X-axis coordinate.
+- State Vector: [Position, Velocity]
+- Transition Matrix: Assumes constant velocity between frames.
+- Innovation: The difference between the detected X_raw and the predicted position.
+- Output: A smoothed, predicted coordinate X_predicted = X + Velocity * 0.1 (100ms lead time).
 
-### 4. Control (UDP Communication)
-- **Protocol**: UDP for ultra-low latency.
-- **Payload**: Sends a string `X:value,Y:value`.
-- **ESP32 Side**: The microcontroller parses this string and maps the pixels to servo PWM pulses.
+## Hardware Communication Layer
 
----
+Data transmission to the ESP32 tripod is handled via UDP.
 
-## ✋ Subject Locking (Gesture Recognition)
-In a crowd, the app might see many people. The **Palm Lock** feature allows manual selection:
-1. When a user raises an **Open Palm**, MediaPipe detects the extended fingers.
-2. The app finds the person closest to that hand.
-3. It "locks" on that specific person's ID.
-4. The bounding box turns **Cyan**, and the app ignores all other subjects until unlocked.
+- Protocol: UDP over IPv4.
+- Payload: "X:[INT],Y:[INT]"
+- Rate: Commands are dispatched immediately following successful frame analysis, typically at 30Hz.
 
----
+## Subject Discovery and Initialization
 
-## 🏗️ Folder/Code Connectivity
-1. **`CameraPreviewScreen`** (MainActivity): The visual entry point.
-2. **`imageAnalyzer`**: Feeds every frame to `processImageProxy`.
-3. **`processImageProxy`**: The engine room. Calls detection models, runs the Kalman Filter, and calculates locking logic.
-4. **`sendUdpCommand`**: Beams the final coordinates to the tripod over Wi-Fi.
+CamX utilizes Network Service Discovery (NSD) to automate hardware pairing.
+- Service Type: "_arduino._tcp."
+- Resolution: When a service is identified, the app resolves the IP address and Port number automatically, updating the UdpSender configuration without manual user intervention.

@@ -1,43 +1,49 @@
-# CamX - Automated Tripod Tracking App
+# CamX - Automated Tripod Tracking System
 
-CamX is an intelligent Android application designed to work with a motorized tripod. It uses computer vision to detect subjects and automatically controls the tripod's pan/tilt servos to keep the subject centered in the frame.
+CamX is a technical Android application designed to interface with motorized tripod hardware. It provides real-time subject localization using on-device computer vision and transmits precision tracking coordinates to external hardware via low-latency network protocols.
 
-## Key Features
+## System Features
 
-- **Gesture-Based Locking**: Raise an **Open Palm** to lock the tracker onto a specific person in a crowd.
-- **Predictive Tracking**: Uses a **Kalman Filter** to estimate subject velocity and predict future position.
-- **Precision Coordinates**: Sends exact `X,Y` center pixel coordinates to the hardware for advanced control.
-- **Tripod Discovery (NSD)**: Automatically finds compatible tripods on your Wi-Fi network.
-- **Data Logging**: Export tracking data to **CSV files** for analysis in Excel.
-- **Full Camera Suite**: Supports photo capture, video recording with audio, and more.
+- Predictive Tracking: Implements a 1D Kalman Filter to estimate subject velocity and predict trajectory coordinates.
+- Precision Localization: Transmits exact X and Y center-pixel coordinates to the hardware layer.
+- Discovery and Connectivity: Utilizes Network Service Discovery (NSD) to identify tripod hardware on local Wi-Fi networks.
+- Diagnostic Tools: Includes connection testing with custom payloads and telemetry logging in CSV format.
+- Comprehensive Camera Control: Provides high-resolution photo capture, video recording with audio, and hardware flip capabilities.
 
-## How it Works
+## Architecture and Workflow
 
-### 1. Detection (MediaPipe & ML Kit)
-The app uses **Google ML Kit** for people detection and **MediaPipe Hands** for gesture recognition. This combo allows for robust subject identification and manual locking even in complex environments.
+### 1. Localization Algorithm
+The localization process follows a multi-stage pipeline:
+- Frame Acquisition: Frames are captured via CameraX at a resolution of 640x480.
+- Subject Identification: Google ML Kit Object Detection analyzes the frame to produce subject bounding boxes.
+- Center-Pixel Calculation: The mathematical center of the bounding box is calculated as the primary coordinate.
+- Trajectory Estimation: A Kalman Filter processes the coordinates to filter noise and predict the subject's position 100ms into the future.
 
-### 2. Prediction (Kalman Filter)
-To solve the problem of "chasing" the subject (lag), CamX implements a custom **1D Kalman Filter**.
-- It maintains a state of the subject's **position** and **velocity**.
-- Every camera frame updates the filter.
-- The app predicts where the subject will be in the next **100ms** to account for mechanical motor lag and network latency.
+### 2. Communication Protocol
+- Hardware Link: UDP (User Datagram Protocol) is utilized for minimum latency transmission.
+- Payload Format: Coordinates are transmitted as a standard string: "X:[value],Y:[value]".
+- Network Discovery: Scans for "_arduino._tcp." services to establish the link.
 
-### 3. Networking & Discovery
-- **NSD**: The app scans for `_arduino._tcp.` services to find your tripod automatically.
-- **UDP**: Transmits servo angles (0° to 180°) as lightweight UDP packets for minimum latency.
+## Project Structure
+
+- MainActivity.kt: Central controller managing application state, UI composition, and hardware coordination.
+- KalmanFilter.kt: Mathematical implementation for state estimation and trajectory prediction.
+- UdpSender.kt: Managed network worker for asynchronous hardware command transmission.
+- NsdHelper.kt: Abstraction layer for Android Network Service Discovery.
+- LogManager.kt: Utility for persistent CSV-based telemetry recording.
+
+## Setup Requirements
+
+- Hardware: ESP32-based microcontroller with servo motor integration.
+- Network: Android device and ESP32 must reside on the same subnet.
+- Configuration: Tripod parameters (IP and Port) are managed via the in-app connection settings.
 
 ## Dependencies
 
-- **CameraX**: Foundation for the camera preview, image analysis, and media capture.
-- **ML Kit Object Detection**: Powers the subject identification.
-- **Jetpack Compose**: Modern UI toolkit used for the entire application interface.
-- **Material 3**: Google's latest design system for a professional look and feel.
+- Android Jetpack CameraX (v1.4.1)
+- Google ML Kit Object Detection
+- Android Jetpack Compose (Material 3)
+- Kotlin Coroutines for asynchronous processing
 
-## Setup
-
-1. **Hardware**: An ESP32 connected to a servo motor.
-2. **Network**: The Android device and ESP32 must be on the same Wi-Fi network.
-3. **Configuration**: Update the `esp32Ip` variable in `MainActivity.kt` with your tripod's IP address.
-4. **Android OS**: Compatible with Android 8.0+ and fully optimized for **Android 15+ (16 KB Page Size)**.
-
-
+## License
+Educational and hobbyist use only.
