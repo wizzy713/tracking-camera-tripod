@@ -18,14 +18,19 @@ The project follows a modular structure to separate concerns between the UI, the
 The core tracking algorithm is based on the recursive Bayesian estimation of the subject's center-pixel coordinates.
 
 ### 1. Object Detection (Perception)
-Subject detection is performed using a specialized model from Google ML Kit. This provides a rectangular bounding box defined by [top, left, bottom, right] coordinates in the image coordinate system.
+Subject detection is performed using a specialized model from Google ML Kit. This provides a rectangular bounding box defined by [top, left, bottom, right] coordinates in the image coordinate system. This model runs at 30Hz (every frame) for maximum responsiveness.
 
-### 2. Center-Pixel Calculation
+### 2. Gesture Recognition (Locking)
+MediaPipe Hand Landmarker runs concurrently at 6Hz (every 5th frame) to identify hand keypoints. This throttling ensures system stability and reduces thermal overhead on mobile hardware.
+- Gesture: "Open Palm" is detected when the four fingers (index, middle, ring, pinky) are extended.
+- Logic: When a palm is raised, the system identifies the subject bounding box closest to the hand's geometric center and locks tracking to that ID.
+
+### 3. Center-Pixel Calculation
 The subject's position is localized by calculating the geometric center of the bounding box:
 X_raw = (box.left + box.right) / 2
 Y_raw = (box.top + box.bottom) / 2
 
-### 3. Trajectory Prediction (Kalman Filter)
+### 4. Trajectory Prediction (Kalman Filter)
 To compensate for motor latency and network delay, a 1D Kalman Filter is applied to the X-axis coordinate.
 - State Vector: [Position, Velocity]
 - Transition Matrix: Assumes constant velocity between frames.

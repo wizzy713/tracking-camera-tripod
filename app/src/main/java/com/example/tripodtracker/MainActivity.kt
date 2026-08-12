@@ -47,6 +47,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.example.tripodtracker.ui.theme.TripodTrackerTheme
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
@@ -58,6 +62,7 @@ import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
+import kotlin.math.hypot
 
 class MainActivity : ComponentActivity() {
 
@@ -66,17 +71,20 @@ class MainActivity : ComponentActivity() {
     private val udpSender = UdpSender()
     lateinit var logManager: LogManager
     lateinit var nsdHelper: NsdHelper
+    var handLandmarker: HandLandmarker? = null
 
     private var esp32Ip by mutableStateOf("10.179.76.141")
     private var udpPort by mutableIntStateOf(4210)
     private var discoveredServices = mutableStateListOf<NsdServiceInfo>()
     private var isLogging by mutableStateOf(false)
     private var currentScreen by mutableStateOf("camera")
+    private var lockedId by mutableStateOf<Int?>(null)
 
     data class DetectedObjectInfo(
         val boundingBox: Rect,
         val trackingId: Int?,
-        val label: String = "Person"
+        val label: String = "Person",
+        val isLocked: Boolean = false
     )
 
     data class DetectionResult(
@@ -111,10 +119,32 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        thread { setupHandLandmarker() }
+
         if (allPermissionsGranted()) {
             startCamera()
         } else {
             requestPermissionLauncher.launch(permissions)
+        }
+    }
+
+    private fun setupHandLandmarker() {
+        try {
+            val baseOptions = BaseOptions.builder()
+                .setModelAssetPath("hand_landmarker.task")
+                .build()
+            val options = HandLandmarker.HandLandmarkerOptions.builder()
+                .setBaseOptions(baseOptions)
+                .setMinHandDetectionConfidence(0.5f)
+                .setMinTrackingConfidence(0.5f)
+                .setMinHandPresenceConfidence(0.5f)
+                .setNumHands(1)
+                .setRunningMode(RunningMode.IMAGE)
+                .build()
+            handLandmarker = HandLandmarker.createFromOptions(this, options)
+            Log.d("CamX", "HandLandmarker initialized successfully")
+        } catch (e: Exception) {
+            Log.e("CamX", "HandLandmarker init failed: ${e.message}")
         }
     }
 
@@ -169,12 +199,16 @@ class MainActivity : ComponentActivity() {
             CameraPreviewScreen(
                 cameraExecutor,
                 kalmanFilter,
+                handLandmarker,
                 isLogging = isLogging,
                 onToggleLogging = {
                     isLogging = it
                     if (!it) logManager.saveLog()
                 },
-                onOpenSettings = { currentScreen = "settings" }
+                onOpenSettings = { currentScreen = "settings" },
+                lockedId = lockedId,
+                onUnlock = { lockedId = null },
+                onTargetUpdate = { id -> lockedId = id }
             ) { x, y ->
                 udpSender.send("X:$x,Y:$y")
                 if (isLogging) logManager.log(x.toFloat(), y.toFloat())
@@ -185,6 +219,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
+        handLandmarker?.close()
         udpSender.close()
     }
 }
@@ -193,9 +228,13 @@ class MainActivity : ComponentActivity() {
 fun CameraPreviewScreen(
     executor: ExecutorService,
     kalmanFilter: KalmanFilter,
+    landmarker: HandLandmarker?,
     isLogging: Boolean,
     onToggleLogging: (Boolean) -> Unit,
     onOpenSettings: () -> Unit,
+    lockedId: Int?,
+    onUnlock: () -> Unit,
+    onTargetUpdate: (Int?) -> Unit,
     onTargetDetected: (Int, Int) -> Unit
 ) {
     val context = LocalContext.current
@@ -219,8 +258,8 @@ fun CameraPreviewScreen(
 
         if (isTrackingEnabled) {
             Text(
-                text = if (detectionResult != null) "Tracking" else "Searching",
-                color = Color.Green,
+                text = if (lockedId != null) "LOCKED" else if (detectionResult != null) "Tracking" else "Searching",
+                color = if (lockedId != null) Color.Cyan else Color.Green,
                 modifier = Modifier.padding(top = 64.dp).align(Alignment.TopCenter),
                 style = MaterialTheme.typography.headlineSmall
             )
@@ -231,18 +270,21 @@ fun CameraPreviewScreen(
                     val scaleX = size.width / result.imageWidth
                     val scaleY = size.height / result.imageHeight
 
-                    result.objects.firstOrNull()?.let { obj ->
-                        val left = if (isFront) size.width - (obj.boundingBox.right * scaleX) else obj.boundingBox.left * scaleX
-                        val right = if (isFront) size.width - (obj.boundingBox.left * scaleX) else obj.boundingBox.right * scaleX
-                        val top = obj.boundingBox.top * scaleY
-                        val bottom = obj.boundingBox.bottom * scaleY
+                    result.objects.forEach { obj ->
+                        val isSubjectLocked = obj.trackingId == lockedId
+                        if (lockedId == null || isSubjectLocked) {
+                            val left = if (isFront) size.width - (obj.boundingBox.right * scaleX) else obj.boundingBox.left * scaleX
+                            val right = if (isFront) size.width - (obj.boundingBox.left * scaleX) else obj.boundingBox.right * scaleX
+                            val top = obj.boundingBox.top * scaleY
+                            val bottom = obj.boundingBox.bottom * scaleY
 
-                        drawRect(
-                            color = Color.Green,
-                            topLeft = Offset(left, top),
-                            size = Size(right - left, bottom - top),
-                            style = Stroke(width = 6.dp.toPx())
-                        )
+                            drawRect(
+                                color = if (isSubjectLocked) Color.Cyan else Color.Green,
+                                topLeft = Offset(left, top),
+                                size = Size(right - left, bottom - top),
+                                style = Stroke(width = if (isSubjectLocked) 8.dp.toPx() else 6.dp.toPx())
+                            )
+                        }
                     }
                 }
             }
@@ -258,9 +300,16 @@ fun CameraPreviewScreen(
             }
             
             Row {
+                if (lockedId != null) {
+                    IconButton(onClick = onUnlock) {
+                        Icon(Icons.Default.LockOpen, contentDescription = "Unlock", tint = Color.Cyan)
+                    }
+                }
+
                 IconButton(onClick = { 
                     isTrackingEnabled = !isTrackingEnabled 
                     if (!isTrackingEnabled) {
+                        onUnlock()
                         kalmanFilter.reset()
                         onTargetDetected(320, 240)
                     }
@@ -282,6 +331,7 @@ fun CameraPreviewScreen(
                 
                 IconButton(onClick = {
                     cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+                    onUnlock()
                 }) {
                     Icon(Icons.Filled.FlipCameraAndroid, contentDescription = "Flip", tint = Color.White)
                 }
@@ -330,17 +380,23 @@ fun CameraPreviewScreen(
                 .build()
             val objectDetector = ObjectDetection.getClient(options)
 
+            var frameCounter = 0
             val imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
                 .also {
                 it.setAnalyzer(executor) { imageProxy ->
                     if (isTrackingEnabled) {
+                        frameCounter++
                         processImageProxy(
                             objectDetector, 
+                            landmarker,
                             imageProxy, 
                             cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA,
-                            kalmanFilter
+                            kalmanFilter,
+                            lockedId,
+                            frameCounter % 5 == 0,
+                            onTargetUpdate
                         ) { x, y, result ->
                             onTargetDetected(x, y)
                             detectionResult = result
@@ -463,9 +519,13 @@ fun ConnectionScreen(
 @OptIn(ExperimentalGetImage::class)
 private fun processImageProxy(
     detector: com.google.mlkit.vision.objects.ObjectDetector,
+    handLandmarker: HandLandmarker?,
     imageProxy: ImageProxy,
     isFrontCamera: Boolean,
     kalmanFilter: KalmanFilter,
+    lockedId: Int?,
+    shouldDetectHands: Boolean,
+    onSetLockedId: (Int?) -> Unit,
     onResult: (Int, Int, MainActivity.DetectionResult?) -> Unit
 ) {
     val mediaImage = imageProxy.image
@@ -473,14 +533,59 @@ private fun processImageProxy(
         val rotation = imageProxy.imageInfo.rotationDegrees
         val image = InputImage.fromMediaImage(mediaImage, rotation)
 
+        var openPalmDetected = false
+        var palmX = 0f
+        var palmY = 0f
+        
+        // Only detect hands periodically to save resources and prevent crashes
+        if (shouldDetectHands) {
+            handLandmarker?.let { landmarker ->
+                try {
+                    val bitmap = imageProxy.toBitmap()
+                    val mpImage = BitmapImageBuilder(bitmap).build()
+                    val result = landmarker.detect(mpImage)
+                    if (result.landmarks().isNotEmpty()) {
+                        val hand = result.landmarks()[0]
+                        val isExtended = hand[8].y() < hand[6].y() && hand[12].y() < hand[10].y() && 
+                                        hand[16].y() < hand[14].y() && hand[20].y() < hand[18].y()
+                        if (isExtended) {
+                            openPalmDetected = true
+                            palmX = hand[9].x() * imageProxy.width
+                            palmY = hand[9].y() * imageProxy.height
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("CamX", "Hand detection error: ${e.message}")
+                }
+            }
+        }
+
         detector.process(image)
             .addOnSuccessListener { detectedObjects ->
                 if (detectedObjects.isNotEmpty()) {
                     val objectInfos = detectedObjects.map { 
-                        MainActivity.DetectedObjectInfo(it.boundingBox, it.trackingId)
+                        MainActivity.DetectedObjectInfo(
+                            it.boundingBox, 
+                            it.trackingId,
+                            isLocked = it.trackingId == lockedId
+                        )
                     }
 
-                    val targetObject = detectedObjects.first()
+                    if (openPalmDetected && lockedId == null) {
+                        val closest = detectedObjects.minByOrNull { obj ->
+                            hypot(obj.boundingBox.centerX().toFloat() - palmX, obj.boundingBox.centerY().toFloat() - palmY)
+                        }
+                        if (closest != null && closest.trackingId != null) {
+                            onSetLockedId(closest.trackingId)
+                        }
+                    }
+
+                    val targetObject = if (lockedId != null) {
+                        detectedObjects.find { it.trackingId == lockedId } ?: detectedObjects.first()
+                    } else {
+                        detectedObjects.first()
+                    }
+
                     val rawCenterX = targetObject.boundingBox.exactCenterX()
                     val rawCenterY = targetObject.boundingBox.exactCenterY()
 
