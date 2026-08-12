@@ -6,14 +6,15 @@ CamX is an intelligent Android application designed to work with a motorized tri
 
 - **Predictive Tracking**: Uses a **Kalman Filter** to estimate subject velocity and predict future position, significantly reducing tracking lag.
 - **Single-Target Focus**: Intelligent logic that locks onto the most prominent subject for stable motor movement.
+- **Tripod Discovery (NSD)**: Automatically finds compatible tripods on your Wi-Fi network using Network Service Discovery.
+- **Connection Testing**: Built-in utility to ping your ESP32 and verify the communication link before tracking.
+- **Data Logging**: Export tracking data (Timestamp, X, Y) to **CSV files** for analysis in Excel.
 - **Full Camera Suite**: Supports photo capture, video recording with audio, flash control, and front/rear camera switching.
-- **Low Latency**: High-performance image analysis running at 30+ FPS.
-- **Hardware Integration**: Sends real-time pan angles via UDP to an ESP32-controlled tripod.
 
 ## 🛠️ How it Works
 
 ### 1. Detection (MediaPipe & ML Kit)
-The app uses **Google ML Kit Object Detection**, which is built on **MediaPipe** technology. This provides high-accuracy, on-device detection of people and objects without requiring an internet connection.
+The app uses **Google ML Kit Object Detection**, which is built on the high-performance **MediaPipe** framework. This provides high-accuracy, on-device detection of people and objects without requiring an internet connection.
 
 ### 2. Prediction (Kalman Filter)
 To solve the problem of "chasing" the subject (lag), CamX implements a custom **1D Kalman Filter**.
@@ -21,8 +22,9 @@ To solve the problem of "chasing" the subject (lag), CamX implements a custom **
 - Every camera frame updates the filter.
 - The app predicts where the subject will be in the next **100ms** to account for mechanical motor lag and network latency.
 
-### 3. Communication (UDP)
-The calculated "Lead Angle" is converted to a servo position (0° to 180°) and transmitted as a small UDP packet to the ESP32's IP address.
+### 3. Networking & Discovery
+- **NSD**: The app scans for `_arduino._tcp.` services to find your tripod automatically.
+- **UDP**: Transmits servo angles (0° to 180°) as lightweight UDP packets for minimum latency.
 
 ## 📦 Dependencies
 

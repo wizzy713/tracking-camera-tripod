@@ -7,9 +7,11 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.net.nsd.NsdServiceInfo
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
@@ -24,7 +26,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -39,6 +44,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -60,8 +66,14 @@ class MainActivity : ComponentActivity() {
     private lateinit var cameraExecutor: ExecutorService
     private val kalmanFilter = KalmanFilter()
     private val udpSocket = DatagramSocket()
-    private val esp32Ip = "10.179.76.141" // ESP32 IP address
-    private val udpPort = 4210
+    private lateinit var logManager: LogManager
+    private lateinit var nsdHelper: NsdHelper
+
+    private var esp32Ip by mutableStateOf("10.179.76.141")
+    private var udpPort by mutableIntStateOf(4210)
+    private var discoveredServices = mutableStateListOf<NsdServiceInfo>()
+    private var isLogging by mutableStateOf(false)
+    private var currentScreen by mutableStateOf("camera")
 
     data class DetectedObjectInfo(
         val boundingBox: Rect,
@@ -94,6 +106,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         cameraExecutor = Executors.newSingleThreadExecutor()
+        logManager = LogManager(this)
+        nsdHelper = NsdHelper(this) { serviceInfo ->
+            if (discoveredServices.none { it.serviceName == serviceInfo.serviceName }) {
+                discoveredServices.add(serviceInfo)
+            }
+        }
 
         if (allPermissionsGranted()) {
             startCamera()
@@ -109,9 +127,64 @@ class MainActivity : ComponentActivity() {
     private fun startCamera() {
         setContent {
             TripodTrackerTheme {
-                CameraPreviewScreen(cameraExecutor, kalmanFilter) { angle ->
-                    sendUdpCommand(angle)
+                CamXApp()
+            }
+        }
+    }
+
+    @Composable
+    fun CamXApp() {
+        if (currentScreen == "settings") {
+            BackHandler { currentScreen = "camera" }
+            ConnectionScreen(
+                discoveredDevices = discoveredServices,
+                currentIp = esp32Ip,
+                currentPort = udpPort,
+                onConnect = { ip, port ->
+                    esp32Ip = ip
+                    udpPort = port
+                    currentScreen = "camera"
+                },
+                onTest = { ip, port ->
+                    sendTestPacket(ip, port)
+                },
+                onDiscoveryStart = {
+                    discoveredServices.clear()
+                    nsdHelper.startDiscovery()
+                },
+                onDiscoveryStop = {
+                    nsdHelper.stopDiscovery()
                 }
+            )
+        } else {
+            CameraPreviewScreen(
+                cameraExecutor,
+                kalmanFilter,
+                isLogging = isLogging,
+                onToggleLogging = {
+                    isLogging = it
+                    if (!it) logManager.saveLog()
+                },
+                onOpenSettings = { currentScreen = "settings" }
+            ) { angle, centerX, centerY ->
+                sendUdpCommand(angle)
+                if (isLogging) {
+                    logManager.log(centerX, centerY)
+                }
+            }
+        }
+    }
+
+    private fun sendTestPacket(ip: String, port: Int) {
+        thread {
+            try {
+                val address = InetAddress.getByName(ip)
+                val buffer = "PING".toByteArray()
+                val packet = DatagramPacket(buffer, buffer.size, address, port)
+                udpSocket.send(packet)
+                runOnUiThread { Toast.makeText(this, "Test packet sent to $ip", Toast.LENGTH_SHORT).show() }
+            } catch (e: Exception) {
+                runOnUiThread { Toast.makeText(this, "Test failed: ${e.message}", Toast.LENGTH_SHORT).show() }
             }
         }
     }
@@ -141,7 +214,10 @@ class MainActivity : ComponentActivity() {
 fun CameraPreviewScreen(
     executor: ExecutorService,
     kalmanFilter: KalmanFilter,
-    onTargetDetected: (Int) -> Unit
+    isLogging: Boolean,
+    onToggleLogging: (Boolean) -> Unit,
+    onOpenSettings: () -> Unit,
+    onTargetDetected: (Int, Float, Float) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -163,6 +239,12 @@ fun CameraPreviewScreen(
         AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
 
         if (isTrackingEnabled) {
+            Text(
+                text = if (detectionResult != null) "Tracking..." else "Searching...",
+                color = Color.Green,
+                modifier = Modifier.padding(top = 64.dp).align(Alignment.TopCenter)
+            )
+            
             Canvas(modifier = Modifier.fillMaxSize()) {
                 detectionResult?.let { result ->
                     val isFront = result.isFrontCamera
@@ -195,23 +277,8 @@ fun CameraPreviewScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = {
-                flashMode = when (flashMode) {
-                    ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_ON
-                    ImageCapture.FLASH_MODE_ON -> ImageCapture.FLASH_MODE_AUTO
-                    else -> ImageCapture.FLASH_MODE_OFF
-                }
-                imageCapture.flashMode = flashMode
-            }) {
-                Icon(
-                    imageVector = when (flashMode) {
-                        ImageCapture.FLASH_MODE_ON -> Icons.Filled.FlashOn
-                        ImageCapture.FLASH_MODE_AUTO -> Icons.Filled.FlashAuto
-                        else -> Icons.Filled.FlashOff
-                    },
-                    contentDescription = "Flash",
-                    tint = Color.White
-                )
+            IconButton(onClick = onOpenSettings) {
+                Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
             }
             
             Row {
@@ -220,13 +287,21 @@ fun CameraPreviewScreen(
                     if (!isTrackingEnabled) {
                         detectionResult = null
                         kalmanFilter.reset()
-                        onTargetDetected(90) // Center motor when off
+                        onTargetDetected(90, 0f, 0f) // Center motor when off
                     }
                 }) {
                     Icon(
                         imageVector = if (isTrackingEnabled) Icons.Filled.TrackChanges else Icons.Filled.LocationDisabled,
                         contentDescription = "Tracking",
                         tint = if (isTrackingEnabled) Color.Green else Color.White
+                    )
+                }
+
+                IconButton(onClick = { onToggleLogging(!isLogging) }) {
+                    Icon(
+                        imageVector = if (isLogging) Icons.Default.Save else Icons.Default.Description,
+                        contentDescription = "Log",
+                        tint = if (isLogging) Color.Red else Color.White
                     )
                 }
                 
@@ -306,7 +381,10 @@ fun CameraPreviewScreen(
                             cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA,
                             kalmanFilter
                         ) { angle, result ->
-                            onTargetDetected(angle)
+                            val target = result?.objects?.firstOrNull()
+                            val cx = target?.boundingBox?.exactCenterX() ?: 0f
+                            val cy = target?.boundingBox?.exactCenterY() ?: 0f
+                            onTargetDetected(angle, cx, cy)
                             detectionResult = result
                         }
                     } else {
@@ -320,6 +398,89 @@ fun CameraPreviewScreen(
                 cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, imageAnalyzer, imageCapture, videoCapture)
             } catch (exc: Exception) {
                 Log.e("CameraX", "Binding failed", exc)
+            }
+        }
+    }
+}
+
+@Composable
+fun ConnectionScreen(
+    discoveredDevices: List<NsdServiceInfo>,
+    currentIp: String,
+    currentPort: Int,
+    onConnect: (String, Int) -> Unit,
+    onTest: (String, Int) -> Unit,
+    onDiscoveryStart: () -> Unit,
+    onDiscoveryStop: () -> Unit
+) {
+    var ip by remember { mutableStateOf(currentIp) }
+    var port by remember { mutableStateOf(currentPort.toString()) }
+
+    LaunchedEffect(Unit) {
+        onDiscoveryStart()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { onDiscoveryStop() }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("Tripod Connection", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        OutlinedTextField(
+            value = ip,
+            onValueChange = { ip = it },
+            label = { Text("ESP32 IP Address") },
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = port,
+            onValueChange = { port = it },
+            label = { Text("UDP Port") },
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            Button(onClick = { onTest(ip, port.toIntOrNull() ?: 4210) }) {
+                Text("Test Connection")
+            }
+            Button(onClick = { onConnect(ip, port.toIntOrNull() ?: 4210) }) {
+                Text("Save & Connect")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        Text("Discovered Devices", style = MaterialTheme.typography.titleMedium)
+        
+        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+            items(discoveredDevices) { device ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .clickable {
+                            ip = device.host.hostAddress ?: ""
+                            port = device.port.toString()
+                        }
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(device.serviceName, style = MaterialTheme.typography.bodyLarge)
+                        Text("${device.host.hostAddress}:${device.port}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
         }
     }
