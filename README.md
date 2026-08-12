@@ -4,17 +4,17 @@ CamX is an intelligent Android application designed to work with a motorized tri
 
 ## 🚀 Key Features
 
-- **Predictive Tracking**: Uses a **Kalman Filter** to estimate subject velocity and predict future position, significantly reducing tracking lag.
-- **Single-Target Focus**: Intelligent logic that locks onto the most prominent subject for stable motor movement.
-- **Tripod Discovery (NSD)**: Automatically finds compatible tripods on your Wi-Fi network using Network Service Discovery.
-- **Connection Testing**: Built-in utility to ping your ESP32 and verify the communication link before tracking.
-- **Data Logging**: Export tracking data (Timestamp, X, Y) to **CSV files** for analysis in Excel.
-- **Full Camera Suite**: Supports photo capture, video recording with audio, flash control, and front/rear camera switching.
+- **Gesture-Based Locking**: Raise an **Open Palm** to lock the tracker onto a specific person in a crowd.
+- **Predictive Tracking**: Uses a **Kalman Filter** to estimate subject velocity and predict future position.
+- **Precision Coordinates**: Sends exact `X,Y` center pixel coordinates to the hardware for advanced control.
+- **Tripod Discovery (NSD)**: Automatically finds compatible tripods on your Wi-Fi network.
+- **Data Logging**: Export tracking data to **CSV files** for analysis in Excel.
+- **Full Camera Suite**: Supports photo capture, video recording with audio, and more.
 
 ## 🛠️ How it Works
 
 ### 1. Detection (MediaPipe & ML Kit)
-The app uses **Google ML Kit Object Detection**, which is built on the high-performance **MediaPipe** framework. This provides high-accuracy, on-device detection of people and objects without requiring an internet connection.
+The app uses **Google ML Kit** for people detection and **MediaPipe Hands** for gesture recognition. This combo allows for robust subject identification and manual locking even in complex environments.
 
 ### 2. Prediction (Kalman Filter)
 To solve the problem of "chasing" the subject (lag), CamX implements a custom **1D Kalman Filter**.

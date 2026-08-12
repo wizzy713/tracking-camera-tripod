@@ -3,6 +3,7 @@ package com.example.tripodtracker
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
@@ -20,6 +21,11 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
 import androidx.camera.video.VideoCapture
 import androidx.camera.view.PreviewView
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -60,25 +66,30 @@ import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
+import kotlin.math.abs
+import kotlin.math.hypot
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var cameraExecutor: ExecutorService
     private val kalmanFilter = KalmanFilter()
     private val udpSocket = DatagramSocket()
-    private lateinit var logManager: LogManager
-    private lateinit var nsdHelper: NsdHelper
+    lateinit var logManager: LogManager
+    lateinit var nsdHelper: NsdHelper
+    var handLandmarker: HandLandmarker? = null
 
     private var esp32Ip by mutableStateOf("10.179.76.141")
     private var udpPort by mutableIntStateOf(4210)
     private var discoveredServices = mutableStateListOf<NsdServiceInfo>()
     private var isLogging by mutableStateOf(false)
     private var currentScreen by mutableStateOf("camera")
+    private var lockedTrackingId by mutableStateOf<Int?>(null)
 
     data class DetectedObjectInfo(
         val boundingBox: Rect,
         val trackingId: Int?,
-        val label: String = "Object"
+        val label: String = "Person",
+        val isLocked: Boolean = false
     )
 
     data class DetectionResult(
@@ -113,10 +124,31 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        setupHandLandmarker()
+
         if (allPermissionsGranted()) {
             startCamera()
         } else {
             requestPermissionLauncher.launch(permissions)
+        }
+    }
+
+    private fun setupHandLandmarker() {
+        try {
+            val baseOptions = BaseOptions.builder()
+                .setModelAssetPath("hand_landmarker.task")
+                .build()
+            val options = HandLandmarker.HandLandmarkerOptions.builder()
+                .setBaseOptions(baseOptions)
+                .setMinHandDetectionConfidence(0.5f)
+                .setMinTrackingConfidence(0.5f)
+                .setMinHandPresenceConfidence(0.5f)
+                .setNumHands(1)
+                .setRunningMode(RunningMode.IMAGE)
+                .build()
+            handLandmarker = HandLandmarker.createFromOptions(this, options)
+        } catch (e: Exception) {
+            Log.e("CamX", "HandLandmarker init failed", e)
         }
     }
 
@@ -165,11 +197,13 @@ class MainActivity : ComponentActivity() {
                     isLogging = it
                     if (!it) logManager.saveLog()
                 },
-                onOpenSettings = { currentScreen = "settings" }
-            ) { angle, centerX, centerY ->
-                sendUdpCommand(angle)
+                onOpenSettings = { currentScreen = "settings" },
+                lockedId = lockedTrackingId,
+                onSetLockedId = { lockedTrackingId = it }
+            ) { x, y ->
+                sendUdpCommand(x, y)
                 if (isLogging) {
-                    logManager.log(centerX, centerY)
+                    logManager.log(x.toFloat(), y.toFloat())
                 }
             }
         }
@@ -189,10 +223,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun sendUdpCommand(panAngle: Int) {
+    private fun sendUdpCommand(centerX: Int, centerY: Int) {
         thread {
             try {
-                val message = panAngle.toString()
+                // Sending exact center pixel coordinates as requested
+                val message = "X:$centerX,Y:$centerY"
                 val buffer = message.toByteArray()
                 val address = InetAddress.getByName(esp32Ip)
                 val packet = DatagramPacket(buffer, buffer.size, address, udpPort)
@@ -206,6 +241,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
+        handLandmarker?.close()
         udpSocket.close()
     }
 }
@@ -217,7 +253,9 @@ fun CameraPreviewScreen(
     isLogging: Boolean,
     onToggleLogging: (Boolean) -> Unit,
     onOpenSettings: () -> Unit,
-    onTargetDetected: (Int, Float, Float) -> Unit
+    lockedId: Int?,
+    onSetLockedId: (Int?) -> Unit,
+    onTargetDetected: (Int, Int) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -240,9 +278,10 @@ fun CameraPreviewScreen(
 
         if (isTrackingEnabled) {
             Text(
-                text = if (detectionResult != null) "Tracking..." else "Searching...",
-                color = Color.Green,
-                modifier = Modifier.padding(top = 64.dp).align(Alignment.TopCenter)
+                text = if (lockedId != null) "LOCKED" else if (detectionResult != null) "Tracking..." else "Searching...",
+                color = if (lockedId != null) Color.Cyan else Color.Green,
+                modifier = Modifier.padding(top = 64.dp).align(Alignment.TopCenter),
+                style = MaterialTheme.typography.headlineSmall
             )
             
             Canvas(modifier = Modifier.fillMaxSize()) {
@@ -251,19 +290,22 @@ fun CameraPreviewScreen(
                     val scaleX = size.width / result.imageWidth
                     val scaleY = size.height / result.imageHeight
 
-                    // Only show the first (most prominent) object in a green box
-                    result.objects.firstOrNull()?.let { obj ->
-                        val left = if (isFront) size.width - (obj.boundingBox.right * scaleX) else obj.boundingBox.left * scaleX
-                        val right = if (isFront) size.width - (obj.boundingBox.left * scaleX) else obj.boundingBox.right * scaleX
-                        val top = obj.boundingBox.top * scaleY
-                        val bottom = obj.boundingBox.bottom * scaleY
+                    result.objects.forEach { obj ->
+                        val isLocked = obj.trackingId == lockedId
+                        // Only show the box if it's the locked one OR if nothing is locked (show prominent)
+                        if (lockedId == null || isLocked) {
+                            val left = if (isFront) size.width - (obj.boundingBox.right * scaleX) else obj.boundingBox.left * scaleX
+                            val right = if (isFront) size.width - (obj.boundingBox.left * scaleX) else obj.boundingBox.right * scaleX
+                            val top = obj.boundingBox.top * scaleY
+                            val bottom = obj.boundingBox.bottom * scaleY
 
-                        drawRect(
-                            color = Color.Green,
-                            topLeft = Offset(left, top),
-                            size = Size(right - left, bottom - top),
-                            style = Stroke(width = 6.dp.toPx())
-                        )
+                            drawRect(
+                                color = if (isLocked) Color.Cyan else Color.Green,
+                                topLeft = Offset(left, top),
+                                size = Size(right - left, bottom - top),
+                                style = Stroke(width = if (isLocked) 8.dp.toPx() else 6.dp.toPx())
+                            )
+                        }
                     }
                 }
             }
@@ -282,12 +324,18 @@ fun CameraPreviewScreen(
             }
             
             Row {
+                if (lockedId != null) {
+                    IconButton(onClick = { onSetLockedId(null) }) {
+                        Icon(Icons.Default.LockOpen, contentDescription = "Unlock", tint = Color.Cyan)
+                    }
+                }
+
                 IconButton(onClick = { 
                     isTrackingEnabled = !isTrackingEnabled 
                     if (!isTrackingEnabled) {
-                        detectionResult = null
+                        onSetLockedId(null)
                         kalmanFilter.reset()
-                        onTargetDetected(90, 0f, 0f) // Center motor when off
+                        onTargetDetected(320, 240) // Default center
                     }
                 }) {
                     Icon(
@@ -307,7 +355,7 @@ fun CameraPreviewScreen(
                 
                 IconButton(onClick = {
                     cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
-                    detectionResult = null
+                    onSetLockedId(null)
                 }) {
                     Icon(Icons.Filled.FlipCameraAndroid, contentDescription = "Flip", tint = Color.White)
                 }
@@ -371,20 +419,22 @@ fun CameraPreviewScreen(
 
             val imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .build()
                 .also {
                 it.setAnalyzer(executor) { imageProxy ->
                     if (isTrackingEnabled) {
+                        val mainActivity = (context as MainActivity)
                         processImageProxy(
                             objectDetector, 
+                            mainActivity.handLandmarker,
                             imageProxy, 
                             cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA,
-                            kalmanFilter
-                        ) { angle, result ->
-                            val target = result?.objects?.firstOrNull()
-                            val cx = target?.boundingBox?.exactCenterX() ?: 0f
-                            val cy = target?.boundingBox?.exactCenterY() ?: 0f
-                            onTargetDetected(angle, cx, cy)
+                            kalmanFilter,
+                            lockedId,
+                            onSetLockedId
+                        ) { x, y, result ->
+                            onTargetDetected(x, y)
                             detectionResult = result
                         }
                     } else {
@@ -403,6 +453,106 @@ fun CameraPreviewScreen(
     }
 }
 
+@OptIn(ExperimentalGetImage::class)
+private fun processImageProxy(
+    detector: com.google.mlkit.vision.objects.ObjectDetector,
+    handLandmarker: HandLandmarker?,
+    imageProxy: ImageProxy,
+    isFrontCamera: Boolean,
+    kalmanFilter: KalmanFilter,
+    lockedId: Int?,
+    onSetLockedId: (Int?) -> Unit,
+    onResult: (Int, Int, MainActivity.DetectionResult?) -> Unit
+) {
+    val bitmap = imageProxy.toBitmap()
+    val mediaImage = imageProxy.image
+    if (mediaImage != null) {
+        val rotation = imageProxy.imageInfo.rotationDegrees
+        val image = InputImage.fromMediaImage(mediaImage, rotation)
+
+        // 1. Detect Hands for Gesture Lock
+        var openPalmDetected = false
+        var palmX = 0f
+        var palmY = 0f
+        
+        handLandmarker?.let { landmarker ->
+            val mpImage = BitmapImageBuilder(bitmap).build()
+            val result = landmarker.detect(mpImage)
+            if (result.landmarks().isNotEmpty()) {
+                val hand = result.landmarks()[0]
+                // Check for Open Palm: Fingers extended
+                // Simplified check: tips higher than PIP joints (for vertical palm)
+                // Landmarks: 8 (index tip), 12 (middle), 16 (ring), 20 (pinky)
+                val isExtended = hand[8].y() < hand[6].y() && hand[12].y() < hand[10].y() && 
+                                hand[16].y() < hand[14].y() && hand[20].y() < hand[18].y()
+                if (isExtended) {
+                    openPalmDetected = true
+                    // Palm position (landmark 0 is wrist, 9 is middle base)
+                    palmX = hand[9].x() * imageProxy.width
+                    palmY = hand[9].y() * imageProxy.height
+                }
+            }
+        }
+
+        // 2. Detect Objects (People)
+        detector.process(image)
+            .addOnSuccessListener { detectedObjects ->
+                if (detectedObjects.isNotEmpty()) {
+                    val objectInfos = detectedObjects.map { 
+                        MainActivity.DetectedObjectInfo(it.boundingBox, it.trackingId, isLocked = it.trackingId == lockedId)
+                    }
+
+                    // Handle Palm Locking
+                    if (openPalmDetected && lockedId == null) {
+                        val closest = detectedObjects.minByOrNull { obj ->
+                            hypot(obj.boundingBox.centerX() - palmX, obj.boundingBox.centerY() - palmY)
+                        }
+                        if (closest != null && closest.trackingId != null) {
+                            onSetLockedId(closest.trackingId)
+                        }
+                    }
+
+                    // Select target: locked one or first one
+                    val targetObject = if (lockedId != null) {
+                        detectedObjects.find { it.trackingId == lockedId } ?: detectedObjects.first()
+                    } else {
+                        detectedObjects.first()
+                    }
+
+                    val rawCenterX = targetObject.boundingBox.exactCenterX()
+                    val rawCenterY = targetObject.boundingBox.exactCenterY()
+
+                    // Apply Kalman Filter for prediction
+                    kalmanFilter.update(rawCenterX, System.currentTimeMillis())
+                    val predictedX = kalmanFilter.predictFuture(0.1f)
+                    
+                    val result = MainActivity.DetectionResult(
+                        objects = objectInfos,
+                        imageWidth = imageProxy.width,
+                        imageHeight = imageProxy.height,
+                        isFrontCamera = isFrontCamera
+                    )
+                    onResult(predictedX.toInt(), rawCenterY.toInt(), result)
+                } else {
+                    onResult(imageProxy.width / 2, imageProxy.height / 2, null)
+                }
+            }
+            .addOnCompleteListener {
+                imageProxy.close()
+            }
+    } else {
+        imageProxy.close()
+    }
+}
+
+// Extension to convert ImageProxy to Bitmap efficiently for MediaPipe
+@OptIn(ExperimentalGetImage::class)
+private fun ImageProxy.toBitmap(): Bitmap {
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    bitmap.copyPixelsFromBuffer(planes[0].buffer)
+    return bitmap
+}
+
 @Composable
 fun ConnectionScreen(
     discoveredDevices: List<NsdServiceInfo>,
@@ -416,21 +566,17 @@ fun ConnectionScreen(
     var ip by remember { mutableStateOf(currentIp) }
     var port by remember { mutableStateOf(currentPort.toString()) }
 
-    LaunchedEffect(Unit) {
-        onDiscoveryStart()
-    }
-
-    DisposableEffect(Unit) {
-        onDispose { onDiscoveryStop() }
-    }
+    LaunchedEffect(Unit) { onDiscoveryStart() }
+    DisposableEffect(Unit) { onDispose { onDiscoveryStop() } }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Tripod Connection", style = MaterialTheme.typography.headlineMedium)
+        Text("Tripod Connection", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground)
         Spacer(modifier = Modifier.height(24.dp))
 
         OutlinedTextField(
@@ -438,7 +584,11 @@ fun ConnectionScreen(
             onValueChange = { ip = it },
             label = { Text("ESP32 IP Address") },
             modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = MaterialTheme.colorScheme.onBackground,
+                unfocusedTextColor = MaterialTheme.colorScheme.onBackground
+            )
         )
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -448,101 +598,39 @@ fun ConnectionScreen(
             onValueChange = { port = it },
             label = { Text("UDP Port") },
             modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = MaterialTheme.colorScheme.onBackground,
+                unfocusedTextColor = MaterialTheme.colorScheme.onBackground
+            )
         )
 
         Spacer(modifier = Modifier.height(16.dp))
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            Button(onClick = { onTest(ip, port.toIntOrNull() ?: 4210) }) {
-                Text("Test Connection")
-            }
-            Button(onClick = { onConnect(ip, port.toIntOrNull() ?: 4210) }) {
-                Text("Save & Connect")
-            }
+            Button(onClick = { onTest(ip, port.toIntOrNull() ?: 4210) }) { Text("Test Connection") }
+            Button(onClick = { onConnect(ip, port.toIntOrNull() ?: 4210) }) { Text("Save & Connect") }
         }
 
         Spacer(modifier = Modifier.height(32.dp))
-        Text("Discovered Devices", style = MaterialTheme.typography.titleMedium)
+        Text("Discovered Devices", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
         
         LazyColumn(modifier = Modifier.fillMaxWidth()) {
             items(discoveredDevices) { device ->
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp)
-                        .clickable {
-                            ip = device.host.hostAddress ?: ""
-                            port = device.port.toString()
-                        }
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
+                        ip = device.host.hostAddress ?: ""
+                        port = device.port.toString()
+                    },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text(device.serviceName, style = MaterialTheme.typography.bodyLarge)
-                        Text("${device.host.hostAddress}:${device.port}", style = MaterialTheme.typography.bodySmall)
+                        Text(device.serviceName, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${device.host.hostAddress}:${device.port}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
                     }
                 }
             }
         }
-    }
-}
-
-@OptIn(ExperimentalGetImage::class)
-private fun processImageProxy(
-    detector: com.google.mlkit.vision.objects.ObjectDetector,
-    imageProxy: ImageProxy,
-    isFrontCamera: Boolean,
-    kalmanFilter: KalmanFilter,
-    onResult: (Int, MainActivity.DetectionResult?) -> Unit
-) {
-    val mediaImage = imageProxy.image
-    if (mediaImage != null) {
-        val rotation = imageProxy.imageInfo.rotationDegrees
-        val image = InputImage.fromMediaImage(mediaImage, rotation)
-
-        detector.process(image)
-            .addOnSuccessListener { detectedObjects ->
-                if (detectedObjects.isNotEmpty()) {
-                    val objectInfos = detectedObjects.map { 
-                        MainActivity.DetectedObjectInfo(it.boundingBox, it.trackingId)
-                    }
-
-                    // For now, track the first object
-                    val targetObject = detectedObjects.first()
-                    val rawCenterX = targetObject.boundingBox.exactCenterX()
-
-                    // Apply Kalman Filter for prediction
-                    kalmanFilter.update(rawCenterX, System.currentTimeMillis())
-                    // Predict 100ms into the future to account for motor/network lag
-                    val predictedX = kalmanFilter.predictFuture(0.1f)
-                    
-                    val isRotated = rotation == 90 || rotation == 270
-                    val imageWidth = if (isRotated) imageProxy.height else imageProxy.width
-                    val imageHeight = if (isRotated) imageProxy.width else imageProxy.height
-
-                    // Use predictedX for the motor command
-                    var mappedAngle = ((predictedX / imageProxy.width) * 180).toInt()
-                    mappedAngle = 180 - mappedAngle
-                    
-                    val result = MainActivity.DetectionResult(
-                        objects = objectInfos,
-                        imageWidth = imageWidth,
-                        imageHeight = imageHeight,
-                        isFrontCamera = isFrontCamera
-                    )
-                    onResult(mappedAngle, result)
-                } else {
-                    kalmanFilter.reset()
-                    onResult(90, null)
-                }
-            }
-            .addOnFailureListener {
-                onResult(90, null)
-            }
-            .addOnCompleteListener {
-                imageProxy.close()
-            }
-    } else {
-        imageProxy.close()
     }
 }
 
@@ -555,18 +643,12 @@ private fun takePhoto(context: android.content.Context, imageCapture: ImageCaptu
             put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CamX")
         }
     }
-
     val outputOptions = ImageCapture.OutputFileOptions.Builder(context.contentResolver, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues).build()
-
     imageCapture.takePicture(outputOptions, executor, object : ImageCapture.OnImageSavedCallback {
         override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-            (context as? MainActivity)?.runOnUiThread {
-                Toast.makeText(context, "Photo saved!", Toast.LENGTH_SHORT).show()
-            }
+            (context as? MainActivity)?.runOnUiThread { Toast.makeText(context, "Photo saved!", Toast.LENGTH_SHORT).show() }
         }
-        override fun onError(exc: ImageCaptureException) {
-            Log.e("CamX", "Photo capture failed", exc)
-        }
+        override fun onError(exc: ImageCaptureException) { Log.e("CamX", "Photo capture failed", exc) }
     })
 }
 
@@ -579,9 +661,7 @@ private fun startVideoRecording(context: android.content.Context, videoCapture: 
             put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/CamX")
         }
     }
-
     val mediaStoreOutputOptions = MediaStoreOutputOptions.Builder(context.contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI).setContentValues(contentValues).build()
-
     val pendingRecording = videoCapture.output.prepareRecording(context, mediaStoreOutputOptions)
     if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
         pendingRecording.withAudioEnabled()
@@ -589,9 +669,7 @@ private fun startVideoRecording(context: android.content.Context, videoCapture: 
     return pendingRecording.start(executor) { recordEvent ->
         if (recordEvent is VideoRecordEvent.Finalize) {
             if (!recordEvent.hasError()) {
-                (context as? MainActivity)?.runOnUiThread {
-                    Toast.makeText(context, "Video saved!", Toast.LENGTH_SHORT).show()
-                }
+                (context as? MainActivity)?.runOnUiThread { Toast.makeText(context, "Video saved!", Toast.LENGTH_SHORT).show() }
             }
         }
     }

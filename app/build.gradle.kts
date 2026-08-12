@@ -64,4 +64,5 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.androidx.camera.video)
     implementation(libs.google.mlkit.objectdetection)
+    implementation(libs.mediapipe.tasks.vision)
 }
