@@ -4,9 +4,9 @@ CamX is a technical Android application designed to interface with motorized tri
 
 ## System Features
 
-- Open Palm Gesture Locking: Raise an open palm to lock the tracker onto a specific person in a crowd.
-- Predictive Tracking: Implements a 1D Kalman Filter to estimate subject velocity and predict trajectory coordinates.
-- Precision Localization: Transmits exact X and Y center-pixel coordinates to the hardware layer.
+- Open Palm Gesture Locking: Raise an open palm to lock the tracker onto the nearest detected object in a crowd (see note below -- detection is not currently person-specific).
+- Predictive Tracking: Implements a 1D Kalman Filter (one instance per axis) to estimate subject velocity and predict trajectory coordinates.
+- Resolution-Independent Localization: Transmits a normalized X/Y error in [-1, 1] to the hardware layer, decoupled from camera resolution and orientation.
 - Connectivity: Manual IP/port configuration to link with tripod hardware on the local Wi-Fi network.
 - Diagnostic Tools: Includes connection testing with custom payloads and telemetry logging in CSV format.
 - Comprehensive Camera Control: Provides high-resolution photo capture, video recording with audio, and hardware flip capabilities.
@@ -15,15 +15,15 @@ CamX is a technical Android application designed to interface with motorized tri
 
 ### 1. Localization Algorithm
 The localization process follows a multi-stage pipeline:
-- Frame Acquisition: Frames are captured via CameraX at a resolution of 640x480.
-- Subject Identification: Google ML Kit Object Detection analyzes the frame to produce subject bounding boxes.
+- Frame Acquisition: Frames are captured via CameraX; analysis resolution is device-dependent (not pinned).
+- Subject Identification: Google ML Kit Object Detection analyzes the frame to produce bounding boxes for prominent objects (a generic detector, not a person detector -- see ARCHITECTURE.md).
 - Gesture Recognition: MediaPipe Hand Landmarker identifies an open palm gesture to initiate subject locking.
-- Center-Pixel Calculation: The mathematical center of the bounding box is calculated as the primary coordinate.
-- Trajectory Estimation: A Kalman Filter processes the coordinates to filter noise and predict the subject's position 100ms into the future.
+- Normalized Error Calculation: The bounding box center is converted to a normalized X/Y error in [-1, 1] relative to frame center, in the rotation-corrected upright frame.
+- Trajectory Estimation: A Kalman Filter per axis processes the coordinates to filter noise and predict the subject's position ~100ms into the future (a placeholder pending a measured end-to-end latency figure).
 
 ### 2. Communication Protocol
 - Hardware Link: UDP (User Datagram Protocol) is utilized for minimum latency transmission.
-- Payload Format: Coordinates are transmitted as a standard string: "X:[value],Y:[value]".
+- Payload Format: "EX:[FLOAT],EY:[FLOAT],SEQ:[UINT]" -- normalized error per axis plus a sequence number for loss/reorder detection.
 - Configuration: The IP address and port of the ESP32 are entered manually in the connection settings.
 
 ## Project Structure
