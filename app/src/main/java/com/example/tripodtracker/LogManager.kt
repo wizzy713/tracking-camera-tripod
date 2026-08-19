@@ -19,10 +19,32 @@ class LogManager(private val context: Context) {
     private val data = mutableListOf<String>()
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
 
-    fun log(x: Float, y: Float) {
+    /**
+     * @param frameTimestampNanos Monotonic frame-capture timestamp (ImageProxy.imageInfo.timestamp), not wall-clock.
+     * @param rawX/@param rawY Raw detection centre in pixels; NaN if this frame had no measurement (coasting).
+     * @param filteredX/@param filteredY Kalman position estimate in pixels.
+     * @param velocityX/@param velocityY Kalman velocity estimate in px/s -- lets you recompute
+     *   predictions at any horizon offline (predicted = filtered + velocity * horizonSeconds)
+     *   for a prediction-horizon sweep without re-running the app.
+     * @param dtSeconds Time since the previous filter update, in seconds.
+     */
+    fun log(
+        frameTimestampNanos: Long,
+        seq: Long,
+        detectionCount: Int,
+        rawX: Float,
+        rawY: Float,
+        filteredX: Float,
+        filteredY: Float,
+        velocityX: Float,
+        velocityY: Float,
+        dtSeconds: Float
+    ) {
         val timestamp = dateFormat.format(Date())
+        val line = "$timestamp,$frameTimestampNanos,$seq,$detectionCount," +
+            "$rawX,$rawY,$filteredX,$filteredY,$velocityX,$velocityY,$dtSeconds"
         synchronized(lock) {
-            data.add("$timestamp,$x,$y")
+            data.add(line)
         }
     }
 
@@ -50,7 +72,10 @@ class LogManager(private val context: Context) {
         uri?.let {
             resolver.openOutputStream(it)?.use { outputStream ->
                 OutputStreamWriter(outputStream).use { writer ->
-                    writer.write("Timestamp,CenterX,CenterY\n")
+                    writer.write(
+                        "Timestamp,FrameTimestampNanos,Seq,DetectionCount," +
+                            "RawX,RawY,FilteredX,FilteredY,VelocityX,VelocityY,DtSeconds\n"
+                    )
                     snapshot.forEach { line ->
                         writer.write("$line\n")
                     }

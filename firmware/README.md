@@ -26,6 +26,13 @@ This folder contains the ESP32 firmware for the automated tracking tripod hardwa
 6. Select your ESP32 board and click **Upload**.
 
 ## Protocol
-The Android app sends UDP packets to port 4210 in the format: `X:value,Y:value`
-Where X and Y are pixel coordinates from a 640x480 frame.
-320, 240 is considered the exact center.
+The Android app sends UDP packets to port 4210 in the format: `EX:value,EY:value,SEQ:value`
+Where `EX`/`EY` are the subject's X/Y offset from frame center, normalized to `[-1, 1]`
+(0 = centered, independent of camera resolution or orientation), and `SEQ` is a
+monotonically increasing packet sequence number used to detect and drop
+out-of-order or duplicate packets.
+
+The firmware applies proportional control: `step = clamp(KP * error, -MAX_STEP, MAX_STEP)`
+per axis, so servo movement scales with how far off-center the subject is rather
+than moving a fixed amount per packet. Tune `KP`, `MAX_STEP`, and `DEADZONE` at
+the top of `camx_tripod.ino` for your servos and desired responsiveness.

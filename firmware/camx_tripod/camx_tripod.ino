@@ -6,15 +6,16 @@
  * - ESP32Servo (Install via Arduino Library Manager)
  *
  * Features:
- * - mDNS auto-discovery as "_arduino._tcp"
- * - UDP coordinate parsing (X:value,Y:value)
- * - Proportional servo control with deadzone
+ * - mDNS advertisement as "_arduino._tcp" (for future discovery tooling)
+ * - UDP normalized-error parsing (EX:value,EY:value,SEQ:value)
+ * - Proportional (P) servo control with deadzone
  */
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <ESPmDNS.h>
 #include <ESP32Servo.h>
+#include <string.h>
 
 // --- Configuration ---
 const char* ssid = "YOUR_WIFI_SSID";
@@ -26,19 +27,26 @@ const int udpPort = 4210;
 const int PAN_PIN = 18;
 const int TILT_PIN = 19;
 
-// Tracker Settings
-const int FRAME_WIDTH = 640;  // Match Android camera resolution
-const int FRAME_HEIGHT = 480;
-const int DEADZONE = 20;      // Pixels from center to ignore to prevent jitter
+// Control tuning. The Android app sends error as a fraction of half-frame in
+// [-1, 1], where 0 means the subject is centred -- these constants no longer
+// depend on any particular camera resolution.
+const float DEADZONE = 0.03f;  // Normalized error below which we hold still, to prevent jitter
+const float KP = 6.0f;         // Degrees of servo motion per unit of normalized error
+const float MAX_STEP = 4.0f;   // Max degrees of servo motion applied per packet
 
 // --- Global Objects ---
 WiFiUDP udp;
 Servo panServo;
 Servo tiltServo;
 
-int currentPan = 90;
-int currentTilt = 90;
-char packetBuffer[255];
+float currentPan = 90.0f;
+float currentTilt = 90.0f;
+
+uint32_t lastSeq = 0;
+bool haveSeq = false;
+
+const int PACKET_BUFFER_SIZE = 255;
+char packetBuffer[PACKET_BUFFER_SIZE];
 
 void setup() {
   Serial.begin(115200);
@@ -46,8 +54,8 @@ void setup() {
   // Initialize Servos
   panServo.attach(PAN_PIN);
   tiltServo.attach(TILT_PIN);
-  panServo.write(currentPan);
-  tiltServo.write(currentTilt);
+  panServo.write((int)currentPan);
+  tiltServo.write((int)currentTilt);
 
   // Connect to WiFi
   WiFi.begin(ssid, password);
@@ -60,7 +68,7 @@ void setup() {
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
 
-  // Start mDNS discovery for the Android app
+  // Advertise over mDNS for future discovery tooling
   if (!MDNS.begin(deviceName)) {
     Serial.println("Error setting up MDNS responder!");
   } else {
@@ -74,51 +82,71 @@ void setup() {
 }
 
 void loop() {
-  int packetSize = udp.parsePacket();
-  if (packetSize) {
-    int len = udp.read(packetBuffer, 255);
-    if (len > 0) packetBuffer[len] = 0;
+  // Drain the socket each iteration so we always act on the most recent
+  // packet rather than a backlog of stale coordinates built up under load.
+  char latestPacket[PACKET_BUFFER_SIZE];
+  int latestLen = -1;
 
-    String payload = String(packetBuffer);
-    Serial.println("Received: " + payload);
+  int packetSize;
+  while ((packetSize = udp.parsePacket()) > 0) {
+    // Read at most PACKET_BUFFER_SIZE-1 bytes so index [len] is always a
+    // valid slot for the null terminator.
+    int len = udp.read(packetBuffer, PACKET_BUFFER_SIZE - 1);
+    if (len <= 0) continue;
+    packetBuffer[len] = 0;
+    memcpy(latestPacket, packetBuffer, len + 1);
+    latestLen = len;
+  }
 
-    // Manual Parsing of "X:val,Y:val"
-    int xIndex = payload.indexOf("X:");
-    int yIndex = payload.indexOf(",Y:");
+  if (latestLen > 0) {
+    String payload = String(latestPacket);
 
-    if (xIndex != -1 && yIndex != -1) {
-      int targetX = payload.substring(xIndex + 2, yIndex).toInt();
-      int targetY = payload.substring(yIndex + 3).toInt();
+    int exIndex = payload.indexOf("EX:");
+    int eyIndex = payload.indexOf(",EY:");
+    int seqIndex = payload.indexOf(",SEQ:");
 
-      updateTripod(targetX, targetY);
+    if (exIndex != -1 && eyIndex != -1) {
+      float errX = payload.substring(exIndex + 3, eyIndex).toFloat();
+      float errY;
+
+      if (seqIndex != -1) {
+        errY = payload.substring(eyIndex + 4, seqIndex).toFloat();
+        uint32_t seq = (uint32_t) payload.substring(seqIndex + 5).toInt();
+        if (haveSeq && seq < lastSeq) {
+          Serial.println("Dropped out-of-order packet");
+          return;
+        }
+        lastSeq = seq;
+        haveSeq = true;
+      } else {
+        errY = payload.substring(eyIndex + 4).toFloat();
+      }
+
+      updateTripod(errX, errY);
     }
   }
 }
 
 /**
- * Maps pixel coordinates to servo movements.
- * Android sends (320, 240) for center.
+ * Proportional control from normalized error in [-1, 1] (fraction of
+ * half-frame from centre). Positive errX means the subject is right of
+ * centre; positive errY means the subject is below centre.
  */
-void updateTripod(int x, int y) {
-  int centerX = FRAME_WIDTH / 2;
-  int centerY = FRAME_HEIGHT / 2;
-
-  // Pan Logic (Horizontal)
-  if (abs(x - centerX) > DEADZONE) {
-    if (x < centerX) currentPan++; // Object is left, turn left
-    else currentPan--;             // Object is right, turn right
+void updateTripod(float errX, float errY) {
+  if (fabs(errX) > DEADZONE) {
+    float step = constrain(KP * errX, -MAX_STEP, MAX_STEP);
+    currentPan -= step; // Flip sign if pan direction is inverted for your mounting.
   }
 
-  // Tilt Logic (Vertical)
-  if (abs(y - centerY) > DEADZONE) {
-    if (y < centerY) currentTilt--; // Object is up, tilt up
-    else currentTilt++;             // Object is down, tilt down
+  if (fabs(errY) > DEADZONE) {
+    float step = constrain(KP * errY, -MAX_STEP, MAX_STEP);
+    currentTilt += step; // Flip sign if tilt direction is inverted for your mounting.
   }
 
   // Constrain servos to physical limits
-  currentPan = constrain(currentPan, 0, 180);
-  currentTilt = constrain(currentTilt, 0, 180);
+  currentPan = constrain(currentPan, 0.0f, 180.0f);
+  currentTilt = constrain(currentTilt, 0.0f, 180.0f);
 
-  panServo.write(currentPan);
-  tiltServo.write(currentTilt);
+  panServo.write((int)currentPan);
+  tiltServo.write((int)currentTilt);
 }
