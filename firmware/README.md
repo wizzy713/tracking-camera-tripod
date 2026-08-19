@@ -4,7 +4,7 @@ This folder contains the ESP32 firmware for the automated tracking tripod hardwa
 
 ## Features
 - WiFi and UDP support for low-latency coordinate receiving.
-- mDNS Auto-Discovery: The Android app will automatically find this device on the network.
+- mDNS Advertisement: The device announces itself as `_arduino._tcp.` on the local network for future discovery tooling (the Android app currently uses manual IP/port entry).
 - Proportional Servo Control: Smooth movement based on real-time person coordinates.
 
 ## Hardware Requirements
