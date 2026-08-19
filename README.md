@@ -7,7 +7,7 @@ CamX is a technical Android application designed to interface with motorized tri
 - Open Palm Gesture Locking: Raise an open palm to lock the tracker onto a specific person in a crowd.
 - Predictive Tracking: Implements a 1D Kalman Filter to estimate subject velocity and predict trajectory coordinates.
 - Precision Localization: Transmits exact X and Y center-pixel coordinates to the hardware layer.
-- Discovery and Connectivity: Utilizes Network Service Discovery (NSD) to identify tripod hardware on local Wi-Fi networks.
+- Connectivity: Manual IP/port configuration to link with tripod hardware on the local Wi-Fi network.
 - Diagnostic Tools: Includes connection testing with custom payloads and telemetry logging in CSV format.
 - Comprehensive Camera Control: Provides high-resolution photo capture, video recording with audio, and hardware flip capabilities.
 
@@ -24,14 +24,13 @@ The localization process follows a multi-stage pipeline:
 ### 2. Communication Protocol
 - Hardware Link: UDP (User Datagram Protocol) is utilized for minimum latency transmission.
 - Payload Format: Coordinates are transmitted as a standard string: "X:[value],Y:[value]".
-- Network Discovery: Scans for "_arduino._tcp." services to establish the link.
+- Configuration: The IP address and port of the ESP32 are entered manually in the connection settings.
 
 ## Project Structure
 
 - MainActivity.kt: Central controller managing application state, UI composition, and hardware coordination.
 - KalmanFilter.kt: Mathematical implementation for state estimation and trajectory prediction.
 - UdpSender.kt: Managed network worker for asynchronous hardware command transmission.
-- NsdHelper.kt: Abstraction layer for Android Network Service Discovery.
 - LogManager.kt: Utility for persistent CSV-based telemetry recording.
 
 ## Setup Requirements

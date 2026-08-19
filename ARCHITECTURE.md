@@ -10,7 +10,6 @@ The project follows a modular structure to separate concerns between the UI, the
     - MainActivity.kt: Orchestrates the Android component lifecycle, Compose UI, and high-level application state transitions.
     - KalmanFilter.kt: Implementation of a Discrete Kalman Filter for state estimation (Position/Velocity) of the tracked subject.
     - UdpSender.kt: Encapsulates a DatagramSocket within a dedicated background thread to handle non-blocking network I/O.
-    - NsdHelper.kt: Manages the registration and discovery of network services using the mDNS protocol.
     - LogManager.kt: Provides thread-safe recording of subject coordinates to the local file system in CSV format.
 
 ## Localization Algorithm
@@ -47,6 +46,4 @@ Data transmission to the ESP32 tripod is handled via UDP.
 
 ## Subject Discovery and Initialization
 
-CamX utilizes Network Service Discovery (NSD) to automate hardware pairing.
-- Service Type: "_arduino._tcp."
-- Resolution: When a service is identified, the app resolves the IP address and Port number automatically, updating the UdpSender configuration without manual user intervention.
+Subject discovery is handled manually via the connection settings. The user specifies the target IP address and Port of the ESP32 hardware to establish the UDP link.

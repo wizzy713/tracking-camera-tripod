@@ -3,11 +3,11 @@ package com.example.tripodtracker
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
-import android.net.nsd.NsdServiceInfo
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -25,8 +25,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -54,9 +52,6 @@ import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ExecutorService
@@ -70,12 +65,10 @@ class MainActivity : ComponentActivity() {
     private val kalmanFilter = KalmanFilter()
     private val udpSender = UdpSender()
     lateinit var logManager: LogManager
-    lateinit var nsdHelper: NsdHelper
     var handLandmarker: HandLandmarker? = null
 
     private var esp32Ip by mutableStateOf("10.179.76.141")
     private var udpPort by mutableIntStateOf(4210)
-    private var discoveredServices = mutableStateListOf<NsdServiceInfo>()
     private var isLogging by mutableStateOf(false)
     private var currentScreen by mutableStateOf("camera")
     private var lockedId by mutableStateOf<Int?>(null)
@@ -113,11 +106,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         cameraExecutor = Executors.newSingleThreadExecutor()
         logManager = LogManager(this)
-        nsdHelper = NsdHelper(this) { serviceInfo ->
-            if (discoveredServices.none { it.serviceName == serviceInfo.serviceName }) {
-                discoveredServices.add(serviceInfo)
-            }
-        }
 
         thread { setupHandLandmarker() }
 
@@ -169,7 +157,6 @@ class MainActivity : ComponentActivity() {
         if (currentScreen == "settings") {
             BackHandler { currentScreen = "camera" }
             ConnectionScreen(
-                discoveredDevices = discoveredServices,
                 currentIp = esp32Ip,
                 currentPort = udpPort,
                 isLogging = isLogging,
@@ -186,13 +173,6 @@ class MainActivity : ComponentActivity() {
                     udpSender.updateTarget(ip, port)
                     udpSender.send(msg)
                     Toast.makeText(this, "Test packet sent to $ip", Toast.LENGTH_SHORT).show()
-                },
-                onDiscoveryStart = {
-                    discoveredServices.clear()
-                    nsdHelper.startDiscovery()
-                },
-                onDiscoveryStop = {
-                    nsdHelper.stopDiscovery()
                 }
             )
         } else {
@@ -270,21 +250,25 @@ fun CameraPreviewScreen(
                     val scaleX = size.width / result.imageWidth
                     val scaleY = size.height / result.imageHeight
 
-                    result.objects.forEach { obj ->
-                        val isSubjectLocked = obj.trackingId == lockedId
-                        if (lockedId == null || isSubjectLocked) {
-                            val left = if (isFront) size.width - (obj.boundingBox.right * scaleX) else obj.boundingBox.left * scaleX
-                            val right = if (isFront) size.width - (obj.boundingBox.left * scaleX) else obj.boundingBox.right * scaleX
-                            val top = obj.boundingBox.top * scaleY
-                            val bottom = obj.boundingBox.bottom * scaleY
+                    // Only draw the target object (Locked one, or the primary one)
+                    val targetObj = if (lockedId != null) {
+                        result.objects.find { it.trackingId == lockedId }
+                    } else {
+                        result.objects.firstOrNull()
+                    }
 
-                            drawRect(
-                                color = if (isSubjectLocked) Color.Cyan else Color.Green,
-                                topLeft = Offset(left, top),
-                                size = Size(right - left, bottom - top),
-                                style = Stroke(width = if (isSubjectLocked) 8.dp.toPx() else 6.dp.toPx())
-                            )
-                        }
+                    targetObj?.let { obj ->
+                        val left = if (isFront) size.width - (obj.boundingBox.right * scaleX) else obj.boundingBox.left * scaleX
+                        val right = if (isFront) size.width - (obj.boundingBox.left * scaleX) else obj.boundingBox.right * scaleX
+                        val top = obj.boundingBox.top * scaleY
+                        val bottom = obj.boundingBox.bottom * scaleY
+
+                        drawRect(
+                            color = if (obj.isLocked) Color.Cyan else Color.Green,
+                            topLeft = Offset(left, top),
+                            size = Size(right - left, bottom - top),
+                            style = Stroke(width = if (obj.isLocked) 8.dp.toPx() else 6.dp.toPx())
+                        )
                     }
                 }
             }
@@ -419,22 +403,16 @@ fun CameraPreviewScreen(
 
 @Composable
 fun ConnectionScreen(
-    discoveredDevices: List<NsdServiceInfo>,
     currentIp: String,
     currentPort: Int,
     isLogging: Boolean,
     onToggleLogging: (Boolean) -> Unit,
     onConnect: (String, Int) -> Unit,
-    onTest: (String, Int, String) -> Unit,
-    onDiscoveryStart: () -> Unit,
-    onDiscoveryStop: () -> Unit
+    onTest: (String, Int, String) -> Unit
 ) {
     var ip by remember { mutableStateOf(currentIp) }
     var port by remember { mutableStateOf(currentPort.toString()) }
     var testMessage by remember { mutableStateOf("PING") }
-
-    LaunchedEffect(Unit) { onDiscoveryStart() }
-    DisposableEffect(Unit) { onDispose { onDiscoveryStop() } }
 
     Column(
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp),
@@ -493,26 +471,6 @@ fun ConnectionScreen(
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(32.dp))
-        Text("Discovered Devices", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
-        
-        LazyColumn(modifier = Modifier.fillMaxWidth()) {
-            items(discoveredDevices) { device ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
-                        ip = device.host?.hostAddress ?: ""
-                        port = device.port.toString()
-                    },
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(device.serviceName, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("${device.host?.hostAddress}:${device.port}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -541,7 +499,8 @@ private fun processImageProxy(
         if (shouldDetectHands) {
             handLandmarker?.let { landmarker ->
                 try {
-                    val bitmap = imageProxy.toBitmap()
+                    // Use a stable YUV-to-Bitmap conversion
+                    val bitmap = imageProxy.toBitmapInternal()
                     val mpImage = BitmapImageBuilder(bitmap).build()
                     val result = landmarker.detect(mpImage)
                     if (result.landmarks().isNotEmpty()) {
@@ -609,6 +568,29 @@ private fun processImageProxy(
     } else {
         imageProxy.close()
     }
+}
+
+@OptIn(ExperimentalGetImage::class)
+private fun ImageProxy.toBitmapInternal(): Bitmap {
+    val yBuffer = planes[0].buffer
+    val uBuffer = planes[1].buffer
+    val vBuffer = planes[2].buffer
+
+    val ySize = yBuffer.remaining()
+    val uSize = uBuffer.remaining()
+    val vSize = vBuffer.remaining()
+
+    val nv21 = ByteArray(ySize + uSize + vSize)
+
+    yBuffer.get(nv21, 0, ySize)
+    vBuffer.get(nv21, ySize, vSize)
+    uBuffer.get(nv21, ySize + vSize, uSize)
+
+    val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, width, height, null)
+    val out = java.io.ByteArrayOutputStream()
+    yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 100, out)
+    val imageBytes = out.toByteArray()
+    return android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
 }
 
 private fun takePhoto(context: android.content.Context, imageCapture: ImageCapture, executor: ExecutorService) {
