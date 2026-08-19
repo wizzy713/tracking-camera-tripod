@@ -13,16 +13,24 @@ import java.util.*
 
 class LogManager(private val context: Context) {
 
+    // log() runs on the frame-analysis executor thread while saveLog()/clear() run on
+    // the UI thread, so access to `data` must be synchronized.
+    private val lock = Any()
     private val data = mutableListOf<String>()
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
 
     fun log(x: Float, y: Float) {
         val timestamp = dateFormat.format(Date())
-        data.add("$timestamp,$x,$y")
+        synchronized(lock) {
+            data.add("$timestamp,$x,$y")
+        }
     }
 
     fun saveLog() {
-        if (data.isEmpty()) {
+        val snapshot = synchronized(lock) {
+            if (data.isEmpty()) null else data.toList().also { data.clear() }
+        }
+        if (snapshot == null) {
             Toast.makeText(context, "No data to save", Toast.LENGTH_SHORT).show()
             return
         }
@@ -43,17 +51,18 @@ class LogManager(private val context: Context) {
             resolver.openOutputStream(it)?.use { outputStream ->
                 OutputStreamWriter(outputStream).use { writer ->
                     writer.write("Timestamp,CenterX,CenterY\n")
-                    data.forEach { line ->
+                    snapshot.forEach { line ->
                         writer.write("$line\n")
                     }
                 }
             }
             Toast.makeText(context, "Log saved to Documents/CamX_Logs", Toast.LENGTH_LONG).show()
-            data.clear()
         } ?: Log.e("LogManager", "Failed to create log file")
     }
 
     fun clear() {
-        data.clear()
+        synchronized(lock) {
+            data.clear()
+        }
     }
 }
