@@ -60,10 +60,17 @@ class KalmanFilter {
         x += k_p * y
         v += k_v * y
 
-        p_p *= (1 - k_p)
-        p_pv *= (1 - k_p)
-        p_vp -= k_v * p_p
-        p_vv -= k_v * p_pv
+        // Compute from pre-update covariance values -- p_vp/p_vv depend on the
+        // old p_p/p_pv, so they must not read values p_p/p_pv already overwrote.
+        val newPp = p_p * (1 - k_p)
+        val newPpv = p_pv * (1 - k_p)
+        val newPvp = p_vp - k_v * p_p
+        val newPvv = p_vv - k_v * p_pv
+
+        p_p = newPp
+        p_pv = newPpv
+        p_vp = newPvp
+        p_vv = newPvv
 
         return x
     }
