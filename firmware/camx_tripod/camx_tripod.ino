@@ -67,9 +67,21 @@ char packetBuffer[PACKET_BUFFER_SIZE];
 void setup() {
   Serial.begin(115200);
 
-  // Initialize Servos
-  panServo.attach(PAN_PIN);
-  tiltServo.attach(TILT_PIN);
+  // Initialize Servos. setPeriodHertz + explicit pulse-width range before
+  // attach() matches ESP32Servo's own recommendation for non-classic-ESP32
+  // targets (C3/C6/S3), where the plain attach(pin) default range does not
+  // always suit every servo brand.
+  panServo.setPeriodHertz(50);
+  tiltServo.setPeriodHertz(50);
+  panServo.attach(PAN_PIN, 500, 2400);
+  tiltServo.attach(TILT_PIN, 500, 2400);
+
+  // attach() can silently fail to claim a PWM/LEDC channel on some
+  // core/library version combinations on the C6 -- log it so a bad attach
+  // shows up here instead of as "servo just doesn't move."
+  Serial.printf("Pan servo attached: %s\n", panServo.attached() ? "yes" : "NO - check wiring/pin/library version");
+  Serial.printf("Tilt servo attached: %s\n", tiltServo.attached() ? "yes" : "NO - check wiring/pin/library version");
+
   panServo.write((int)currentPan);
   tiltServo.write((int)currentTilt);
 
@@ -108,6 +120,10 @@ void loop() {
 
   if (latestLen > 0) {
     String payload = String(latestPacket);
+    
+    // ADD THIS: Print the raw incoming packet
+    Serial.print("Received: ");
+    Serial.println(payload);
 
     int exIndex = payload.indexOf("EX:");
     int eyIndex = payload.indexOf(",EY:");
@@ -130,9 +146,13 @@ void loop() {
         errY = payload.substring(eyIndex + 4).toFloat();
       }
 
+      // ADD THIS: Print the parsed values to verify your math
+      Serial.printf("Parsed -> errX: %.2f, errY: %.2f\n", errX, errY);
+
       updateTripod(errX, errY);
     }
   }
+  
 }
 
 /**
@@ -157,4 +177,6 @@ void updateTripod(float errX, float errY) {
 
   panServo.write((int)currentPan);
   tiltServo.write((int)currentTilt);
+
+  Serial.printf("Servo write -> pan: %d, tilt: %d\n", (int)currentPan, (int)currentTilt);
 }
