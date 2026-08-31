@@ -10,7 +10,14 @@
  *
  * Features:
  * - UDP normalized-error parsing (EX:value,EY:value,SEQ:value)
- * - Proportional (P) servo control with deadzone
+ * - PID speed control with deadzone, for CONTINUOUS-ROTATION (360-degree)
+ *   servos -- these have no absolute position, so write() commands a
+ *   speed/direction rather than an angle to move to and hold. A neutral
+ *   pulse (~90, but calibrated per-axis) means stop. See PAN_NEUTRAL /
+ *   TILT_NEUTRAL / MAX_SPEED_OFFSET below.
+ * - Loss-of-signal failsafe: stops both motors if no UDP packet has been
+ *   received recently, so a dropped connection or closed app can't leave a
+ *   continuous-rotation servo spinning indefinitely.
  *
  * No code changes are needed to benefit from WiFi 6 -- the C6 negotiates
  * 802.11ax automatically against a WiFi 6 access point via the same
@@ -46,17 +53,48 @@ const int TILT_PIN = 3;
 // Control tuning. The Android app sends error as a fraction of half-frame in
 // [-1, 1], where 0 means the subject is centred -- these constants no longer
 // depend on any particular camera resolution.
-const float DEADZONE = 0.03f;  // Normalized error below which we hold still, to prevent jitter
-const float KP = 6.0f;         // Degrees of servo motion per unit of normalized error
-const float MAX_STEP = 4.0f;   // Max degrees of servo motion applied per packet
+//
+// PAN_NEUTRAL/TILT_NEUTRAL are the pulse values that stop each continuous-
+// rotation servo. 90 is only a nominal starting guess -- cheap continuous-
+// rotation servos (e.g. FS90R-type) are frequently trimmed well off from
+// true center (drift of 10-20 is common, not just 1-2), and pan/tilt are two
+// separate physical units so they will likely need different values. If a
+// servo only ever spins one direction and never reverses no matter which
+// way the error points, that means its whole commanded range is landing on
+// one side of the *true* stop point -- use the serial calibration mode
+// below (send e.g. "P70" or "T110" over Serial Monitor) to find each
+// servo's true stop point, then set these constants to match.
+const int PAN_NEUTRAL = 90;
+const int TILT_NEUTRAL = 90;
+const float DEADZONE = 0.08f;         // Normalized error below which we command a full stop, to prevent hunting/jitter near center
+const float KP = 5.0f;                // Proportional gain: speed-offset per unit of normalized error
+const float KI = 2.0f;                // Integral gain: corrects small persistent bias/creep. Set to 0 to disable.
+const float KD = 0.0f;                // Derivative gain: dampens overshoot, but AMPLIFIES noise from a jittery
+                                       // vision signal. Start at 0. Only raise this, in small steps, if you still
+                                       // see overshoot/oscillation after KP and KI are tuned -- if it makes things
+                                       // jerkier, that's noise amplification; back it off.
+const float MAX_SPEED_OFFSET = 15.0f; // Max offset from NEUTRAL, i.e. max commanded speed either direction
+const float MAX_INTEGRAL = 5.0f;      // Anti-windup clamp on the accumulated integral term
+
+// If no UDP packet arrives within this long, stop both motors. Without this,
+// losing WiFi or closing the app would leave a continuous-rotation servo
+// spinning at its last commanded speed forever.
+const unsigned long SIGNAL_TIMEOUT_MS = 500;
 
 // --- Global Objects ---
 WiFiUDP udp;
 Servo panServo;
 Servo tiltServo;
 
-float currentPan = 90.0f;
-float currentTilt = 90.0f;
+unsigned long lastPacketMillis = 0;
+bool motorsStopped = true;
+
+// Per-axis PID state
+float panIntegral = 0.0f;
+float tiltIntegral = 0.0f;
+float lastErrX = 0.0f;
+float lastErrY = 0.0f;
+unsigned long lastUpdateMillis = 0;
 
 uint32_t lastSeq = 0;
 bool haveSeq = false;
@@ -82,8 +120,12 @@ void setup() {
   Serial.printf("Pan servo attached: %s\n", panServo.attached() ? "yes" : "NO - check wiring/pin/library version");
   Serial.printf("Tilt servo attached: %s\n", tiltServo.attached() ? "yes" : "NO - check wiring/pin/library version");
 
-  panServo.write((int)currentPan);
-  tiltServo.write((int)currentTilt);
+  panServo.write(PAN_NEUTRAL);
+  tiltServo.write(TILT_NEUTRAL);
+
+  Serial.println("Calibration mode: send \"P<0-180>\" or \"T<0-180>\" over Serial to test a raw");
+  Serial.println("pulse value on that servo directly (e.g. \"P70\"), to find its true stop point.");
+  Serial.println("Note: live UDP tracking will overwrite a calibration write on the next packet.");
 
   // Connect to WiFi
   WiFi.begin(ssid, password);
@@ -102,6 +144,8 @@ void setup() {
 }
 
 void loop() {
+  handleCalibrationInput();
+
   // Drain the socket each iteration so we always act on the most recent
   // packet rather than a backlog of stale coordinates built up under load.
   char latestPacket[PACKET_BUFFER_SIZE];
@@ -120,8 +164,7 @@ void loop() {
 
   if (latestLen > 0) {
     String payload = String(latestPacket);
-    
-    // ADD THIS: Print the raw incoming packet
+
     Serial.print("Received: ");
     Serial.println(payload);
 
@@ -146,37 +189,99 @@ void loop() {
         errY = payload.substring(eyIndex + 4).toFloat();
       }
 
-      // ADD THIS: Print the parsed values to verify your math
       Serial.printf("Parsed -> errX: %.2f, errY: %.2f\n", errX, errY);
 
+      lastPacketMillis = millis();
+      motorsStopped = false;
       updateTripod(errX, errY);
     }
   }
-  
+
+  // Failsafe: a continuous-rotation servo keeps spinning at its last
+  // commanded speed if we simply stop writing to it, unlike a positional
+  // servo which just holds still. If the app closes or WiFi drops, force a
+  // stop rather than let it run away.
+  if (!motorsStopped && (millis() - lastPacketMillis > SIGNAL_TIMEOUT_MS)) {
+    panServo.write(PAN_NEUTRAL);
+    tiltServo.write(TILT_NEUTRAL);
+    motorsStopped = true;
+    Serial.println("Signal lost -- motors stopped");
+  }
 }
 
 /**
- * Proportional control from normalized error in [-1, 1] (fraction of
- * half-frame from centre). Positive errX means the subject is right of
- * centre; positive errY means the subject is below centre.
+ * Reads a line like "P70" or "T110" from Serial and writes that raw pulse
+ * value directly to the named servo, to find its true stop point without
+ * reflashing. Only intended for manual testing with the app not actively
+ * tracking -- a live UDP packet will overwrite the test value on its next
+ * update, since updateTripod() runs independently in the loop above.
+ */
+void handleCalibrationInput() {
+  if (!Serial.available()) return;
+
+  String line = Serial.readStringUntil('\n');
+  line.trim();
+  if (line.length() < 2) return;
+
+  char axis = line.charAt(0);
+  int value = line.substring(1).toInt();
+  value = constrain(value, 0, 180);
+
+  if (axis == 'P' || axis == 'p') {
+    panServo.write(value);
+    Serial.printf("Calibration: pan servo set to %d\n", value);
+  } else if (axis == 'T' || axis == 't') {
+    tiltServo.write(value);
+    Serial.printf("Calibration: tilt servo set to %d\n", value);
+  } else {
+    Serial.println("Calibration: unrecognized command, use \"P<0-180>\" or \"T<0-180>\"");
+  }
+}
+
+/**
+ * PID speed offset for one axis. Returns 0 (-> NEUTRAL, i.e. stop) whenever
+ * the error is within DEADZONE, and resets that axis's integral term at the
+ * same time so it doesn't creep once centered.
+ */
+float computeAxisPID(float error, float &integral, float &lastError, float dt) {
+  if (fabs(error) <= DEADZONE) {
+    integral = 0.0f;
+    lastError = error;
+    return 0.0f;
+  }
+
+  float derivative = 0.0f;
+  if (dt > 0.0f) {
+    integral = constrain(integral + error * dt, -MAX_INTEGRAL, MAX_INTEGRAL);
+    derivative = (error - lastError) / dt;
+  }
+  lastError = error;
+
+  float output = KP * error + KI * integral + KD * derivative;
+  return constrain(output, -MAX_SPEED_OFFSET, MAX_SPEED_OFFSET);
+}
+
+/**
+ * PID speed control from normalized error in [-1, 1] (fraction of
+ * half-frame from centre). Unlike a positional servo, there is no target
+ * angle to move to and hold -- each call computes and writes the current
+ * commanded speed directly, and an in-deadzone error means "stop," not
+ * "stay put." Positive errX means the subject is right of centre; positive
+ * errY means the subject is below centre.
  */
 void updateTripod(float errX, float errY) {
-  if (fabs(errX) > DEADZONE) {
-    float step = constrain(KP * errX, -MAX_STEP, MAX_STEP);
-    currentPan -= step; // Flip sign if pan direction is inverted for your mounting.
-  }
+  unsigned long now = millis();
+  float dt = (lastUpdateMillis == 0) ? 0.0f : (now - lastUpdateMillis) / 1000.0f;
+  lastUpdateMillis = now;
 
-  if (fabs(errY) > DEADZONE) {
-    float step = constrain(KP * errY, -MAX_STEP, MAX_STEP);
-    currentTilt += step; // Flip sign if tilt direction is inverted for your mounting.
-  }
+  float panOffset = computeAxisPID(errX, panIntegral, lastErrX, dt);
+  float tiltOffset = computeAxisPID(errY, tiltIntegral, lastErrY, dt);
 
-  // Constrain servos to physical limits
-  currentPan = constrain(currentPan, 0.0f, 180.0f);
-  currentTilt = constrain(currentTilt, 0.0f, 180.0f);
+  int panSpeed = PAN_NEUTRAL - (int)panOffset;   // Flip sign if pan direction is inverted for your mounting.
+  int tiltSpeed = TILT_NEUTRAL + (int)tiltOffset; // Flip sign if tilt direction is inverted for your mounting.
 
-  panServo.write((int)currentPan);
-  tiltServo.write((int)currentTilt);
+  panServo.write(panSpeed);
+  tiltServo.write(tiltSpeed);
 
-  Serial.printf("Servo write -> pan: %d, tilt: %d\n", (int)currentPan, (int)currentTilt);
+  Serial.printf("Servo speed -> pan: %d, tilt: %d\n", panSpeed, tiltSpeed);
 }

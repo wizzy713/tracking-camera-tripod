@@ -4,12 +4,21 @@ This folder contains the ESP32 firmware for the automated tracking tripod hardwa
 
 ## Features
 - WiFi and UDP support for low-latency coordinate receiving.
-- Proportional Servo Control: Smooth movement based on real-time person coordinates.
+- Proportional Speed Control: for continuous-rotation (360-degree) servos, which have no
+  absolute position -- the firmware commands a speed/direction each update rather than an
+  angle to move to and hold, and explicitly stops when the subject is centered.
+- Loss-of-signal failsafe: stops both motors if no UDP packet arrives for 500ms, so a
+  dropped connection or closed app can't leave a continuous-rotation servo spinning forever.
 
 ## Hardware Requirements
 - ESP32-C6 Microcontroller (e.g. ESP32-C6-DevKitC-1 / DevKitM-1, WiFi 6)
-- 2x High-torque Servo Motors (Pan and Tilt)
+- 2x Continuous-rotation ("360-degree") Servo Motors (Pan and Tilt) -- standard positional
+  (0-180-degree) servos are NOT compatible with the current control scheme, since they can
+  only move to and hold an angle rather than spin at a commanded speed.
 - External 5V/3A Power Supply (Do not power servos from ESP32 pins)
+- **Common ground is required**: tie the external supply's GND, each servo's GND wire, and
+  the ESP32's GND pin together. Without a shared ground, the PWM signal has no valid
+  reference against the servo's own power rail and the servo will not respond correctly.
 
 ## Wiring Diagram (Default)
 - **Pan Servo (X-Axis)**: Signal to GPIO 2
@@ -40,7 +49,12 @@ Where `EX`/`EY` are the subject's X/Y offset from frame center, normalized to `[
 monotonically increasing packet sequence number used to detect and drop
 out-of-order or duplicate packets.
 
-The firmware applies proportional control: `step = clamp(KP * error, -MAX_STEP, MAX_STEP)`
-per axis, so servo movement scales with how far off-center the subject is rather
-than moving a fixed amount per packet. Tune `KP`, `MAX_STEP`, and `DEADZONE` at
-the top of `camx_tripod.ino` for your servos and desired responsiveness.
+The firmware applies proportional speed control: `speed = NEUTRAL +/- clamp(KP * error, -MAX_SPEED_OFFSET, MAX_SPEED_OFFSET)`
+per axis, so rotation speed scales with how far off-center the subject is. When `|error|`
+is within `DEADZONE`, the firmware writes `NEUTRAL` (stop) instead of a speed offset.
+Tune `KP`, `MAX_SPEED_OFFSET`, and `DEADZONE` at the top of `camx_tripod.ino` for your
+servos and desired responsiveness.
+
+`NEUTRAL` (default 90) is the pulse value that stops your specific continuous-rotation
+servo. Cheap units are rarely trimmed exactly to 90 -- if a servo still creeps slowly with
+no error signal applied, nudge `NEUTRAL` up or down by 1-2 until it holds still.
