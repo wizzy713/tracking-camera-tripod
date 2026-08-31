@@ -1,3 +1,5 @@
 # Default ignored files
 /shelf/
 /workspace.xml
+# Claude Code editor tab state (transient, per-machine)
+/claudeCodeTabState.xml
