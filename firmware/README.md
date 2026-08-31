@@ -4,11 +4,16 @@ This folder contains the ESP32 firmware for the automated tracking tripod hardwa
 
 ## Features
 - WiFi and UDP support for low-latency coordinate receiving.
-- Proportional Speed Control: for continuous-rotation (360-degree) servos, which have no
-  absolute position -- the firmware commands a speed/direction each update rather than an
-  angle to move to and hold, and explicitly stops when the subject is centered.
+- PID speed control for continuous-rotation (360-degree) servos, which have no absolute
+  position -- the firmware commands a speed/direction each update rather than an angle to
+  move to and hold, and explicitly stops when the subject is centered. Gains are
+  live-tunable over Serial; see "Tuning the PID" below.
 - Loss-of-signal failsafe: stops both motors if no UDP packet arrives for 500ms, so a
   dropped connection or closed app can't leave a continuous-rotation servo spinning forever.
+- Divergence guard: stops the motors if the tracking error stays pinned at the frame edge
+  (usually a wrong `PAN_DIR`/`TILT_DIR` sign) instead of spinning at full speed.
+- Onboard LED lit solid green at boot as a power/alive indicator (RGB LED on GPIO8 on the
+  ESP32-C6 DevKit).
 
 ## Hardware Requirements
 - ESP32-C6 Microcontroller (e.g. ESP32-C6-DevKitC-1 / DevKitM-1, WiFi 6)

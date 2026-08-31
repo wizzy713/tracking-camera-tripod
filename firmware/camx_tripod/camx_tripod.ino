@@ -179,6 +179,17 @@ char packetBuffer[PACKET_BUFFER_SIZE];
 void setup() {
   Serial.begin(115200);
 
+  // Onboard LED on, solid, as a power/alive indicator -- do this first so a
+  // board that hangs later still shows it powered up. On the ESP32-C6 DevKit
+  // this is the addressable RGB LED on GPIO8; the arduino-esp32 core maps
+  // neopixelWrite()/digitalWrite(RGB_BUILTIN, ...) onto its NeoPixel protocol.
+#if defined(RGB_BUILTIN)
+  neopixelWrite(RGB_BUILTIN, 0, 40, 0);   // dim green
+#elif defined(LED_BUILTIN)
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+#endif
+
   // Initialize Servos. setPeriodHertz + explicit pulse-width range before
   // attach() matches ESP32Servo's own recommendation for non-classic-ESP32
   // targets (C3/C6/S3), where the plain attach(pin) default range does not
