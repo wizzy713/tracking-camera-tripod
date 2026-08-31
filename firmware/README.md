@@ -53,8 +53,43 @@ The firmware applies PID speed control in raw microseconds:
 `pulse_us = NEUTRAL_US +/- clamp(KP*error + KI*integral, -MAX_SPEED_OFFSET_US, MAX_SPEED_OFFSET_US)`
 per axis, so rotation speed scales with how far off-center the subject is. When `|error|`
 is within `DEADZONE`, the firmware writes `NEUTRAL_US` (stop) instead of a speed offset.
-Tune `KP`, `KI`, `MAX_SPEED_OFFSET_US`, and `DEADZONE` at the top of `camx_tripod.ino` for
-your servos and desired responsiveness.
+
+## Tuning the PID
+
+The gains at the top of `camx_tripod.ino` are **derived from a plant model**, not
+hand-picked -- the header comment there carries the full derivation. The short version:
+
+The plant is a **pure integrator**: pulse offset `u` (us) commands camera angular rate
+`w = Ks*u`, and the app's normalized error is `angle / half_FOV`, so
+`de/dt = -(Ks/half_FOV) * u`. For an integrator plant the **loop delay `L` alone** caps
+the usable gain (via phase margin):
+
+```
+w_c = KP * Ks / half_FOV                        (loop crossover frequency)
+PM  = 90deg - w_c*L*(180/pi) - ~10deg(I term)   (aim for PM ~= 50deg)
+KP  = w_c * half_FOV / Ks
+KI  = (w_c / 6) * KP
+KD  = 0        (an integrator needs no D, and it only amplifies vision jitter)
+```
+
+Shipped values assume `Ks ~= 1.8 deg/s/us` (FS90R-class @ 5V, loaded), `half_FOV ~= 26deg`
+(pan) / `33deg` (tilt), `L ~= 0.15 s`, giving `KP ~= 55`, `KI ~= 30`. To make it exact,
+measure the three inputs on your rig and recompute:
+
+1. **`Ks`** -- in the Serial Monitor send `P1600` (neutral + 100 us) and time one full
+   revolution of the pan output with a stopwatch: `Ks = 360 / (t_seconds * 100)`. Repeat
+   at `P1700` to check linearity, and do the same for tilt with `T1600`.
+2. **`half_FOV`** -- mark two points a known distance `d` apart on a wall at a known
+   range `r`, note what fraction `f` of the frame width they span:
+   `half_FOV = atan((d/2) / r) / f`, in degrees.
+3. **`L`** -- enable CSV logging in the app, step the subject sharply, and measure the lag
+   from the `RawX` jump to the servo first moving (or use an LED flash + slow-motion
+   video). Then `w_c = (pi/2 - PM_rad - 0.17) / L` and recompute `KP`, `KI` above.
+
+If tilt visibly lags pan (gravity load on that axis), raise the shared `KP`/`KI` ~25% or
+split them into per-axis constants. If the servo runs *away* from the subject instead of
+recentering, the feedback sign is wrong for your mounting -- flip the `+`/`-` on that
+axis's line in `updateTripod()`.
 
 `PAN_NEUTRAL_US` / `TILT_NEUTRAL_US` (default 1500) is the pulse width, in microseconds,
 that stops that specific continuous-rotation servo. The firmware drives the servos with

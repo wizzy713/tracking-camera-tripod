@@ -73,15 +73,45 @@ const int TILT_PIN = 3;
 // standing ~50 us bias that made even a well-centered servo drift one way.
 const int PAN_NEUTRAL_US  = 1500;
 const int TILT_NEUTRAL_US = 1500;
-const float DEADZONE = 0.06f;            // Normalized error below which we command a full stop, to prevent hunting/jitter near center
-const float KP = 400.0f;                 // Proportional gain: pulse offset (us) per unit of normalized error
-const float KI = 200.0f;                 // Integral gain (us per unit-error-second): corrects small persistent bias/creep. Set to 0 to disable.
-const float KD = 0.0f;                   // Derivative gain: dampens overshoot, but AMPLIFIES noise from a jittery
-                                         // vision signal. Start at 0. Only raise this, in small steps, if you still
-                                         // see overshoot/oscillation after KP and KI are tuned -- if it makes things
-                                         // jerkier, that's noise amplification; back it off.
-const float MAX_SPEED_OFFSET_US = 350.0f; // Max offset from NEUTRAL (us), i.e. max commanded speed either direction
-const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulated integral term (unit-error-seconds)
+
+// --- PID gains: model-based, not hand-tuned ---
+//
+// Plant: servo pulse offset u (us) -> camera angular rate w = Ks*u, and the
+// app's error e = angle / half-FOV, so  de/dt = -(Ks/half_FOV) * u.  That is a
+// PURE INTEGRATOR, E(s)/U(s) = -Kg/s with Kg = Ks/half_FOV. For an integrator
+// the loop delay L is the only thing that caps the gain (phase margin):
+//
+//   w_c = KP * Kg           (crossover freq = loop gain)
+//   PM  = 90deg - w_c*L*(180/pi) - (~10deg from the integral term)
+//   KP  = w_c / Kg = w_c * half_FOV / Ks
+//   KI  = (w_c / 6) * KP    (integral zero one hexave below crossover)
+//   KD  = 0                 (integrator plant needs no D; vision jitter + the
+//                            app-side Kalman already supply the lead term)
+//
+// Inputs (ESTIMATES -- see firmware/README.md "Tuning the PID" for how to
+// measure each on your rig, then recompute):
+//   Ks       ~= 1.8 deg/s per us   (FS90R-class @ 5V, ~100 RPM no-load, derated
+//                                   ~40% for head load; plausible 1.2 - 3.0)
+//   half_FOV ~= 26 deg pan, 33 deg tilt   (phone main camera, portrait)
+//   L        ~= 0.15 s   (~0.10 s vision+net pipeline + T/2 at 30 Hz + ~50 ms
+//                         servo internal speed-loop lag)
+//   PM target 50 deg  ->  w_c ~= 3.5 rad/s  (~0.56 Hz BW, ~0.8 s settle)
+//
+// -> KP_pan ~= 50, KP_tilt ~= 64;  KI ~= (w_c/6)*KP ~= 30..37.  One shared
+// pair covers both axes within the modeling error. If tilt visibly lags pan
+// (gravity load), raise the shared KP/KI ~25% or split them per axis.
+const float DEADZONE = 0.03f;            // Normalized error for full stop. ~2.5 sigma of the app's
+                                         // Kalman-filtered position jitter (~0.013 normalized).
+const float KP = 55.0f;                  // Proportional gain: pulse offset (us) per unit of normalized error
+const float KI = 30.0f;                  // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
+const float KD = 0.0f;                   // Derivative gain: kept at 0 by design (see model above). Only raise, in
+                                         // small steps, if overshoot/oscillation remains after KP and KI are set --
+                                         // if it makes things jerkier that is noise amplification; back it off.
+const float MAX_SPEED_OFFSET_US = 90.0f;  // Max offset from NEUTRAL (us) ~= 150 deg/s camera slew (Ks*90). The P term
+                                         // alone maxes at KP*1 = 55 us, so control stays linear across the whole
+                                         // frame and this clamp only trims integral windup.
+const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulated integral (unit-error-seconds): ~50 us
+                                         // of bias authority at KI above, enough for neutral mistrim + tilt gravity.
 
 // If no UDP packet arrives within this long, stop both motors. Without this,
 // losing WiFi or closing the app would leave a continuous-rotation servo
