@@ -98,20 +98,28 @@ const int TILT_NEUTRAL_US = 1500;
 //   PM target 50 deg  ->  w_c ~= 3.5 rad/s  (~0.56 Hz BW, ~0.8 s settle)
 //
 // -> KP_pan ~= 50, KP_tilt ~= 64;  KI ~= (w_c/6)*KP ~= 30..37.  One shared
-// pair covers both axes within the modeling error. If tilt visibly lags pan
-// (gravity load), raise the shared KP/KI ~25% or split them per axis.
-const float DEADZONE = 0.03f;            // Normalized error for full stop. ~2.5 sigma of the app's
-                                         // Kalman-filtered position jitter (~0.013 normalized).
-const float KP = 55.0f;                  // Proportional gain: pulse offset (us) per unit of normalized error
-const float KI = 30.0f;                  // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
-const float KD = 0.0f;                   // Derivative gain: kept at 0 by design (see model above). Only raise, in
-                                         // small steps, if overshoot/oscillation remains after KP and KI are set --
-                                         // if it makes things jerkier that is noise amplification; back it off.
-const float MAX_SPEED_OFFSET_US = 90.0f;  // Max offset from NEUTRAL (us) ~= 150 deg/s camera slew (Ks*90). The P term
-                                         // alone maxes at KP*1 = 55 us, so control stays linear across the whole
-                                         // frame and this clamp only trims integral windup.
+// pair covers both axes within the modeling error.
+//
+// The defaults below sit a bit above the PM-50 point (w_c ~= 5-6 rad/s): the
+// L ~= 0.15 s estimate is deliberately pessimistic (it double-counts delay the
+// app-side Kalman look-ahead already cancels), so the conservative gains felt
+// sluggish on the bench. KP/KI/KD/MAX_SPEED_OFFSET_US are RUNTIME-TUNABLE over
+// Serial -- send "KP120", "KI70", "KD0", "MS160" (see handleCalibrationInput)
+// to dial in responsiveness without reflashing, then copy the values you like
+// back here. Raise KP until the camera just starts to overshoot/hunt, then
+// back off ~30%. If tilt lags pan (gravity), it needs the higher end.
+const float DEADZONE = 0.03f;             // Normalized error for full stop. ~2.5 sigma of the app's
+                                          // Kalman-filtered position jitter (~0.013 normalized).
+float KP = 85.0f;                         // Proportional gain: pulse offset (us) per unit of normalized error
+float KI = 50.0f;                         // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
+float KD = 0.0f;                          // Derivative gain: kept at 0 by design (see model above). Only raise, in
+                                          // small steps, if overshoot/oscillation remains after KP and KI are set --
+                                          // if it makes things jerkier that is noise amplification; back it off.
+float MAX_SPEED_OFFSET_US = 140.0f;       // Max offset from NEUTRAL (us) ~= 250 deg/s camera slew. The P term alone
+                                          // maxes at KP*1 = 85 us, so control stays linear across the whole frame
+                                          // and this clamp only bounds integral windup + fast-subject transients.
 const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulated integral (unit-error-seconds): ~50 us
-                                         // of bias authority at KI above, enough for neutral mistrim + tilt gravity.
+                                          // of bias authority at KI above, enough for neutral mistrim + tilt gravity.
 
 // Feedback direction per axis. The pulse written is
 //   NEUTRAL_US + DIR * offset
@@ -189,9 +197,10 @@ void setup() {
   panServo.writeMicroseconds(PAN_NEUTRAL_US);
   tiltServo.writeMicroseconds(TILT_NEUTRAL_US);
 
-  Serial.println("Calibration mode: send \"P<us>\" or \"T<us>\" over Serial to write a raw");
-  Serial.println("pulse width to that servo directly (e.g. \"P1495\"), to find its true stop point.");
-  Serial.println("Note: live UDP tracking will overwrite a calibration write on the next packet.");
+  Serial.println("Serial commands: P<us>/T<us> = raw servo pulse (find true stop point);");
+  Serial.println("KP<v>/KI<v>/KD<v>/MS<v> = live PID tuning; ? = print current values.");
+  Serial.println("Note: live UDP tracking overwrites a P/T calibration write on the next packet.");
+  printControlValues();
 
   // Connect to WiFi
   WiFi.begin(ssid, password);
@@ -284,17 +293,34 @@ void loop() {
  * point without reflashing. Only intended for manual testing with the app not
  * actively tracking -- a live UDP packet will overwrite the test value on its
  * next update, since updateTripod() runs independently in the loop above.
+ *
+ * Also accepts live PID tuning (applies immediately, survives until reboot):
+ *   KP<v> KI<v> KD<v>   PID gains
+ *   MS<v>              MAX_SPEED_OFFSET_US (clamped 10..400)
+ *   ?                  print current values
  */
 void handleCalibrationInput() {
   if (!Serial.available()) return;
 
   String line = Serial.readStringUntil('\n');
   line.trim();
-  if (line.length() < 2) return;
+  if (line.length() < 1) return;
 
+  String cmd = line;
+  cmd.toUpperCase();
+
+  if (cmd == "?") {
+    printControlValues();
+    return;
+  }
+  if (cmd.startsWith("KP")) { KP = cmd.substring(2).toFloat(); Serial.printf("KP = %.2f\n", KP); return; }
+  if (cmd.startsWith("KI")) { KI = cmd.substring(2).toFloat(); panIntegral = tiltIntegral = 0.0f; Serial.printf("KI = %.2f (integrators reset)\n", KI); return; }
+  if (cmd.startsWith("KD")) { KD = cmd.substring(2).toFloat(); Serial.printf("KD = %.2f\n", KD); return; }
+  if (cmd.startsWith("MS")) { MAX_SPEED_OFFSET_US = constrain(cmd.substring(2).toFloat(), 10.0f, 400.0f); Serial.printf("MAX_SPEED_OFFSET_US = %.0f\n", MAX_SPEED_OFFSET_US); return; }
+
+  if (line.length() < 2) return;
   char axis = line.charAt(0);
-  int value = line.substring(1).toInt();
-  value = constrain(value, 1000, 2000);
+  int value = constrain(line.substring(1).toInt(), 1000, 2000);
 
   if (axis == 'P' || axis == 'p') {
     panServo.writeMicroseconds(value);
@@ -303,8 +329,13 @@ void handleCalibrationInput() {
     tiltServo.writeMicroseconds(value);
     Serial.printf("Calibration: tilt servo set to %d us\n", value);
   } else {
-    Serial.println("Calibration: unrecognized command, use \"P<us>\" or \"T<us>\" (e.g. \"P1495\")");
+    Serial.println("Unrecognized. Use P<us>/T<us>, KP<v>/KI<v>/KD<v>/MS<v>, or ?");
   }
+}
+
+void printControlValues() {
+  Serial.printf("KP=%.2f  KI=%.2f  KD=%.2f  MAX_SPEED_OFFSET_US=%.0f  DEADZONE=%.3f\n",
+                KP, KI, KD, MAX_SPEED_OFFSET_US, DEADZONE);
 }
 
 /**

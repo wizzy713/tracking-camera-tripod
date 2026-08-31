@@ -72,9 +72,31 @@ KI  = (w_c / 6) * KP
 KD  = 0        (an integrator needs no D, and it only amplifies vision jitter)
 ```
 
-Shipped values assume `Ks ~= 1.8 deg/s/us` (FS90R-class @ 5V, loaded), `half_FOV ~= 26deg`
-(pan) / `33deg` (tilt), `L ~= 0.15 s`, giving `KP ~= 55`, `KI ~= 30`. To make it exact,
-measure the three inputs on your rig and recompute:
+The model with `Ks ~= 1.8 deg/s/us` (FS90R-class @ 5V, loaded), `half_FOV ~= 26deg` (pan) /
+`33deg` (tilt), `L ~= 0.15 s` gives `KP ~= 55`, `KI ~= 30`. That felt sluggish on the
+bench (the `L` estimate is pessimistic -- it double-counts delay the app-side Kalman
+look-ahead already removes), so the **shipped defaults are `KP = 85`, `KI = 50`,
+`MAX_SPEED_OFFSET_US = 140`**, roughly `w_c ~= 5-6 rad/s`.
+
+### Live tuning over Serial
+
+`KP`, `KI`, `KD`, and `MAX_SPEED_OFFSET_US` apply immediately from the Serial Monitor
+(115200 baud), no reflash -- so tune on the running rig:
+
+```
+KP120     set KP = 120
+KI70      set KI = 70   (also zeroes the integrators)
+KD0       set KD
+MS160     set MAX_SPEED_OFFSET_US = 160
+?         print current values
+```
+
+Method: raise `KP` until the camera just starts to overshoot or hunt around the subject,
+then back off ~30%. Set `KI` to about `KP/1.5` and lower it if you see slow oscillation.
+Leave `KD` at 0. Then copy the values you settled on back into `camx_tripod.ino`.
+
+To make the gains exact from first principles instead, measure the three model inputs and
+recompute with the formulas above:
 
 1. **`Ks`** -- in the Serial Monitor send `P1600` (neutral + 100 us) and time one full
    revolution of the pan output with a stopwatch: `Ks = 360 / (t_seconds * 100)`. Repeat
