@@ -54,7 +54,7 @@ Data transmission to the ESP32 tripod is handled via UDP.
 - Payload Format: `"EX:[FLOAT],EY:[FLOAT],SEQ:[UINT]"` -- normalized error in `[-1, 1]` per axis, plus a monotonically increasing sequence number. This is intentionally decoupled from camera resolution, aspect ratio, and orientation: the firmware never needs to know the frame size.
 - Rate: Commands are dispatched immediately following successful frame analysis, typically at 30Hz.
 - Sequencing: `SEQ` lets the firmware detect and drop out-of-order/duplicate packets, and lets you measure packet loss from the gaps in `Seq` in the logged CSV.
-- Firmware control: The ESP32 applies proportional (P) control -- `step = clamp(KP * err, -MAX_STEP, MAX_STEP)` per axis, not a fixed per-packet increment -- so response scales with how far off-center the subject is. See `firmware/camx_tripod/camx_tripod.ino`.
+- Firmware control: The ESP32 applies PID speed control in raw microseconds -- `pulse_us = NEUTRAL_US +/- clamp(KP*err + KI*integral, -MAX_SPEED_OFFSET_US, MAX_SPEED_OFFSET_US)` per axis (KD = 0 by design) -- so the commanded rotation speed scales with how far off-center the subject is, for continuous-rotation servos. The gains are derived from an integrator-plant model (loop delay sets the gain ceiling); see the header comment in `firmware/camx_tripod/camx_tripod.ino` and "Tuning the PID" in `firmware/README.md`.
 
 ## CSV Logging Schema
 
