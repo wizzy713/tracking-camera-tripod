@@ -4,11 +4,16 @@ This folder contains the ESP32 firmware for the automated tracking tripod hardwa
 
 ## Features
 - WiFi and UDP support for low-latency coordinate receiving.
-- Proportional Speed Control: for continuous-rotation (360-degree) servos, which have no
-  absolute position -- the firmware commands a speed/direction each update rather than an
-  angle to move to and hold, and explicitly stops when the subject is centered.
+- PID speed control for continuous-rotation (360-degree) servos, which have no absolute
+  position -- the firmware commands a speed/direction each update rather than an angle to
+  move to and hold, and explicitly stops when the subject is centered. Gains are
+  live-tunable over Serial; see "Tuning the PID" below.
 - Loss-of-signal failsafe: stops both motors if no UDP packet arrives for 500ms, so a
   dropped connection or closed app can't leave a continuous-rotation servo spinning forever.
+- Divergence guard: stops the motors if the tracking error stays pinned at the frame edge
+  (usually a wrong `PAN_DIR`/`TILT_DIR` sign) instead of spinning at full speed.
+- Onboard LED lit solid green at boot as a power/alive indicator (RGB LED on GPIO8 on the
+  ESP32-C6 DevKit).
 
 ## Hardware Requirements
 - ESP32-C6 Microcontroller (e.g. ESP32-C6-DevKitC-1 / DevKitM-1, WiFi 6)
@@ -53,8 +58,80 @@ The firmware applies PID speed control in raw microseconds:
 `pulse_us = NEUTRAL_US +/- clamp(KP*error + KI*integral, -MAX_SPEED_OFFSET_US, MAX_SPEED_OFFSET_US)`
 per axis, so rotation speed scales with how far off-center the subject is. When `|error|`
 is within `DEADZONE`, the firmware writes `NEUTRAL_US` (stop) instead of a speed offset.
-Tune `KP`, `KI`, `MAX_SPEED_OFFSET_US`, and `DEADZONE` at the top of `camx_tripod.ino` for
-your servos and desired responsiveness.
+
+## Tuning the PID
+
+The gains at the top of `camx_tripod.ino` are **derived from a plant model**, not
+hand-picked -- the header comment there carries the full derivation. The short version:
+
+The plant is a **pure integrator**: pulse offset `u` (us) commands camera angular rate
+`w = Ks*u`, and the app's normalized error is `angle / half_FOV`, so
+`de/dt = -(Ks/half_FOV) * u`. For an integrator plant the **loop delay `L` alone** caps
+the usable gain (via phase margin):
+
+```
+w_c = KP * Ks / half_FOV                        (loop crossover frequency)
+PM  = 90deg - w_c*L*(180/pi) - ~10deg(I term)   (aim for PM ~= 50deg)
+KP  = w_c * half_FOV / Ks
+KI  = (w_c / 6) * KP
+KD  = 0        (an integrator needs no D, and it only amplifies vision jitter)
+```
+
+The model with `Ks ~= 1.8 deg/s/us` (FS90R-class @ 5V, loaded), `half_FOV ~= 26deg` (pan) /
+`33deg` (tilt), `L ~= 0.15 s` gives `KP ~= 55`, `KI ~= 30`. That felt sluggish on the
+bench (the `L` estimate is pessimistic -- it double-counts delay the app-side Kalman
+look-ahead already removes), so the **shipped defaults are `KP = 85`, `KI = 50`,
+`MAX_SPEED_OFFSET_US = 140`**, roughly `w_c ~= 5-6 rad/s`.
+
+### Live tuning over Serial
+
+`KP`, `KI`, `KD`, and `MAX_SPEED_OFFSET_US` apply immediately from the Serial Monitor
+(115200 baud), no reflash -- so tune on the running rig:
+
+```
+KP120     set KP = 120
+KI70      set KI = 70   (also zeroes the integrators)
+KD0       set KD
+MS160     set MAX_SPEED_OFFSET_US = 160
+?         print current values
+```
+
+Method: raise `KP` until the camera just starts to overshoot or hunt around the subject,
+then back off ~30%. Set `KI` to about `KP/1.5` and lower it if you see slow oscillation.
+Leave `KD` at 0. Then copy the values you settled on back into `camx_tripod.ino`.
+
+To make the gains exact from first principles instead, measure the three model inputs and
+recompute with the formulas above:
+
+1. **`Ks`** -- in the Serial Monitor send `P1600` (neutral + 100 us) and time one full
+   revolution of the pan output with a stopwatch: `Ks = 360 / (t_seconds * 100)`. Repeat
+   at `P1700` to check linearity, and do the same for tilt with `T1600`.
+2. **`half_FOV`** -- mark two points a known distance `d` apart on a wall at a known
+   range `r`, note what fraction `f` of the frame width they span:
+   `half_FOV = atan((d/2) / r) / f`, in degrees.
+3. **`L`** -- enable CSV logging in the app, step the subject sharply, and measure the lag
+   from the `RawX` jump to the servo first moving (or use an LED flash + slow-motion
+   video). Then `w_c = (pi/2 - PM_rad - 0.17) / L` and recompute `KP`, `KI` above.
+
+If tilt visibly lags pan (gravity load on that axis), raise the shared `KP`/`KI` ~25% or
+split them into per-axis constants.
+
+## Feedback direction (do this before the first app run)
+
+The pulse written per axis is `NEUTRAL_US + DIR * offset`, where `PAN_DIR` / `TILT_DIR`
+(`+1` or `-1`, top of `camx_tripod.ino`) set which way each servo turns for a given error.
+This depends entirely on your servo wiring and how the pan/tilt head is assembled, and a
+**wrong sign makes the loop diverge** -- the servo drives the subject further off-centre
+until it is spinning at full speed. Set it deliberately:
+
+1. Serial-send `P1560` (neutral + 60). Note which way the camera pans.
+2. A subject to the **right** of frame centre must make the camera pan **right** (toward
+   it). If `P1560` panned right, `PAN_DIR = +1`; if it panned left, `PAN_DIR = -1`.
+3. Same for tilt with `T1560`: a subject **below** centre needs the camera to tilt **down**.
+
+As a backstop, if `|error|` stays pinned at the frame edge for `SATURATION_TIMEOUT_MS`
+(1.5 s) the firmware stops both motors and prints `Control DIVERGING` rather than spinning
+forever -- but treat that as "the sign is still wrong," not a fix.
 
 `PAN_NEUTRAL_US` / `TILT_NEUTRAL_US` (default 1500) is the pulse width, in microseconds,
 that stops that specific continuous-rotation servo. The firmware drives the servos with

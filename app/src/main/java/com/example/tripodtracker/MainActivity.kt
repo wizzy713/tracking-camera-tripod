@@ -750,23 +750,43 @@ private fun processImageProxy(
                 val filteredX: Float
                 val filteredY: Float
 
+                // Coast on the Kalman prediction ONLY for a briefly-lost locked
+                // target (short occlusion/misdetection). With no lock, or a lock
+                // that has just expired, do not chase a subject we cannot see:
+                // command "centered" and reset the filters. Sending a stale,
+                // edge-clamped prediction frame after frame is exactly what turns
+                // a momentary loss into a servo that spins until the app closes.
+                val coasting = targetObject == null && lockedId != null &&
+                        newLostFrameCount in 1..MAX_COAST_FRAMES
+
+                val predictedX: Float
+                val predictedY: Float
+
                 if (targetObject != null) {
                     rawX = targetObject.boundingBox.exactCenterX()
                     rawY = targetObject.boundingBox.exactCenterY()
                     filteredX = kalmanFilterX.update(rawX, imageProxy.imageInfo.timestamp)
                     filteredY = kalmanFilterY.update(rawY, imageProxy.imageInfo.timestamp)
-                } else {
-                    // No fresh measurement this frame -- coast on the last estimate
-                    // (locked target temporarily occluded/misdetected) rather than
-                    // snapping to an arbitrary object or the frame centre.
+                    predictedX = kalmanFilterX.predictFuture(PREDICTION_HORIZON_SECONDS)
+                    predictedY = kalmanFilterY.predictFuture(PREDICTION_HORIZON_SECONDS)
+                } else if (coasting) {
                     rawX = Float.NaN
                     rawY = Float.NaN
                     filteredX = if (kalmanFilterX.hasEstimate) kalmanFilterX.position else frameWidth / 2f
                     filteredY = if (kalmanFilterY.hasEstimate) kalmanFilterY.position else frameHeight / 2f
+                    predictedX = kalmanFilterX.predictFuture(PREDICTION_HORIZON_SECONDS)
+                    predictedY = kalmanFilterY.predictFuture(PREDICTION_HORIZON_SECONDS)
+                } else {
+                    // Nothing to track -- hold still and forget the old trajectory.
+                    rawX = Float.NaN
+                    rawY = Float.NaN
+                    kalmanFilterX.reset()
+                    kalmanFilterY.reset()
+                    filteredX = frameWidth / 2f
+                    filteredY = frameHeight / 2f
+                    predictedX = frameWidth / 2f
+                    predictedY = frameHeight / 2f
                 }
-
-                val predictedX = kalmanFilterX.predictFuture(PREDICTION_HORIZON_SECONDS)
-                val predictedY = kalmanFilterY.predictFuture(PREDICTION_HORIZON_SECONDS)
 
                 var errX = (predictedX - frameWidth / 2f) / (frameWidth / 2f)
                 if (isFrontCamera) errX = -errX // Mirror to match the mirrored preview / user's real-world left-right.

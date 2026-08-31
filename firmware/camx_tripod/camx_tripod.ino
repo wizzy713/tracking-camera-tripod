@@ -73,15 +73,77 @@ const int TILT_PIN = 3;
 // standing ~50 us bias that made even a well-centered servo drift one way.
 const int PAN_NEUTRAL_US  = 1500;
 const int TILT_NEUTRAL_US = 1500;
-const float DEADZONE = 0.06f;            // Normalized error below which we command a full stop, to prevent hunting/jitter near center
-const float KP = 400.0f;                 // Proportional gain: pulse offset (us) per unit of normalized error
-const float KI = 200.0f;                 // Integral gain (us per unit-error-second): corrects small persistent bias/creep. Set to 0 to disable.
-const float KD = 0.0f;                   // Derivative gain: dampens overshoot, but AMPLIFIES noise from a jittery
-                                         // vision signal. Start at 0. Only raise this, in small steps, if you still
-                                         // see overshoot/oscillation after KP and KI are tuned -- if it makes things
-                                         // jerkier, that's noise amplification; back it off.
-const float MAX_SPEED_OFFSET_US = 350.0f; // Max offset from NEUTRAL (us), i.e. max commanded speed either direction
-const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulated integral term (unit-error-seconds)
+
+// --- PID gains: model-based, not hand-tuned ---
+//
+// Plant: servo pulse offset u (us) -> camera angular rate w = Ks*u, and the
+// app's error e = angle / half-FOV, so  de/dt = -(Ks/half_FOV) * u.  That is a
+// PURE INTEGRATOR, E(s)/U(s) = -Kg/s with Kg = Ks/half_FOV. For an integrator
+// the loop delay L is the only thing that caps the gain (phase margin):
+//
+//   w_c = KP * Kg           (crossover freq = loop gain)
+//   PM  = 90deg - w_c*L*(180/pi) - (~10deg from the integral term)
+//   KP  = w_c / Kg = w_c * half_FOV / Ks
+//   KI  = (w_c / 6) * KP    (integral zero one hexave below crossover)
+//   KD  = 0                 (integrator plant needs no D; vision jitter + the
+//                            app-side Kalman already supply the lead term)
+//
+// Inputs (ESTIMATES -- see firmware/README.md "Tuning the PID" for how to
+// measure each on your rig, then recompute):
+//   Ks       ~= 1.8 deg/s per us   (FS90R-class @ 5V, ~100 RPM no-load, derated
+//                                   ~40% for head load; plausible 1.2 - 3.0)
+//   half_FOV ~= 26 deg pan, 33 deg tilt   (phone main camera, portrait)
+//   L        ~= 0.15 s   (~0.10 s vision+net pipeline + T/2 at 30 Hz + ~50 ms
+//                         servo internal speed-loop lag)
+//   PM target 50 deg  ->  w_c ~= 3.5 rad/s  (~0.56 Hz BW, ~0.8 s settle)
+//
+// -> KP_pan ~= 50, KP_tilt ~= 64;  KI ~= (w_c/6)*KP ~= 30..37.  One shared
+// pair covers both axes within the modeling error.
+//
+// The defaults below sit a bit above the PM-50 point (w_c ~= 5-6 rad/s): the
+// L ~= 0.15 s estimate is deliberately pessimistic (it double-counts delay the
+// app-side Kalman look-ahead already cancels), so the conservative gains felt
+// sluggish on the bench. KP/KI/KD/MAX_SPEED_OFFSET_US are RUNTIME-TUNABLE over
+// Serial -- send "KP120", "KI70", "KD0", "MS160" (see handleCalibrationInput)
+// to dial in responsiveness without reflashing, then copy the values you like
+// back here. Raise KP until the camera just starts to overshoot/hunt, then
+// back off ~30%. If tilt lags pan (gravity), it needs the higher end.
+const float DEADZONE = 0.03f;             // Normalized error for full stop. ~2.5 sigma of the app's
+                                          // Kalman-filtered position jitter (~0.013 normalized).
+float KP = 85.0f;                         // Proportional gain: pulse offset (us) per unit of normalized error
+float KI = 50.0f;                         // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
+float KD = 0.0f;                          // Derivative gain: kept at 0 by design (see model above). Only raise, in
+                                          // small steps, if overshoot/oscillation remains after KP and KI are set --
+                                          // if it makes things jerkier that is noise amplification; back it off.
+float MAX_SPEED_OFFSET_US = 140.0f;       // Max offset from NEUTRAL (us) ~= 250 deg/s camera slew. The P term alone
+                                          // maxes at KP*1 = 85 us, so control stays linear across the whole frame
+                                          // and this clamp only bounds integral windup + fast-subject transients.
+const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulated integral (unit-error-seconds): ~50 us
+                                          // of bias authority at KI above, enough for neutral mistrim + tilt gravity.
+
+// Feedback direction per axis. The pulse written is
+//   NEUTRAL_US + DIR * offset
+// so DIR sets which way each servo turns for a given error. This is the ONE
+// thing that depends on your servo wiring and how the pan/tilt head is
+// assembled, and getting it wrong makes the loop DIVERGE: the servo drives the
+// subject further off-centre until it spins at full speed. Bring-up procedure:
+//   1. Serial-send "P1560" (neutral + 60). Note which way pan turns.
+//   2. Aim the camera at a subject to the RIGHT of centre. Pan must turn the
+//      camera RIGHT (toward the subject) to track it.
+//   3. If "P1560" turned the camera right, PAN_DIR = +1; if left, PAN_DIR = -1.
+//   4. Same for tilt with "T1560": a subject BELOW centre needs the camera to
+//      tilt DOWN.
+// The SATURATION_* guard below will stop the motors (not spin forever) if this
+// is still wrong, but fix the sign -- don't rely on the guard.
+const int PAN_DIR  = -1;
+const int TILT_DIR = +1;
+
+// Divergence guard. A correctly-wired loop pulls |error| back toward 0. If
+// |error| instead stays pinned at the frame edge for this long, the loop is
+// diverging (wrong *_DIR, or the servo physically can't keep up) -- stop the
+// motors and say so, rather than spin at full speed until the app is closed.
+const float SATURATION_LEVEL = 0.97f;
+const unsigned long SATURATION_TIMEOUT_MS = 1500;
 
 // If no UDP packet arrives within this long, stop both motors. Without this,
 // losing WiFi or closing the app would leave a continuous-rotation servo
@@ -95,6 +157,11 @@ Servo tiltServo;
 
 unsigned long lastPacketMillis = 0;
 bool motorsStopped = true;
+
+// Divergence-guard state (see SATURATION_* above)
+unsigned long panSaturatedSince = 0;
+unsigned long tiltSaturatedSince = 0;
+bool controlDiverged = false;
 
 // Per-axis PID state
 float panIntegral = 0.0f;
@@ -111,6 +178,17 @@ char packetBuffer[PACKET_BUFFER_SIZE];
 
 void setup() {
   Serial.begin(115200);
+
+  // Onboard LED on, solid, as a power/alive indicator -- do this first so a
+  // board that hangs later still shows it powered up. On the ESP32-C6 DevKit
+  // this is the addressable RGB LED on GPIO8; the arduino-esp32 core maps
+  // neopixelWrite()/digitalWrite(RGB_BUILTIN, ...) onto its NeoPixel protocol.
+#if defined(RGB_BUILTIN)
+  neopixelWrite(RGB_BUILTIN, 0, 40, 0);   // dim green
+#elif defined(LED_BUILTIN)
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+#endif
 
   // Initialize Servos. setPeriodHertz + explicit pulse-width range before
   // attach() matches ESP32Servo's own recommendation for non-classic-ESP32
@@ -130,9 +208,10 @@ void setup() {
   panServo.writeMicroseconds(PAN_NEUTRAL_US);
   tiltServo.writeMicroseconds(TILT_NEUTRAL_US);
 
-  Serial.println("Calibration mode: send \"P<us>\" or \"T<us>\" over Serial to write a raw");
-  Serial.println("pulse width to that servo directly (e.g. \"P1495\"), to find its true stop point.");
-  Serial.println("Note: live UDP tracking will overwrite a calibration write on the next packet.");
+  Serial.println("Serial commands: P<us>/T<us> = raw servo pulse (find true stop point);");
+  Serial.println("KP<v>/KI<v>/KD<v>/MS<v> = live PID tuning; ? = print current values.");
+  Serial.println("Note: live UDP tracking overwrites a P/T calibration write on the next packet.");
+  printControlValues();
 
   // Connect to WiFi
   WiFi.begin(ssid, password);
@@ -212,6 +291,9 @@ void loop() {
     panServo.writeMicroseconds(PAN_NEUTRAL_US);
     tiltServo.writeMicroseconds(TILT_NEUTRAL_US);
     motorsStopped = true;
+    panSaturatedSince = 0;
+    tiltSaturatedSince = 0;
+    controlDiverged = false;
     Serial.println("Signal lost -- motors stopped");
   }
 }
@@ -222,17 +304,34 @@ void loop() {
  * point without reflashing. Only intended for manual testing with the app not
  * actively tracking -- a live UDP packet will overwrite the test value on its
  * next update, since updateTripod() runs independently in the loop above.
+ *
+ * Also accepts live PID tuning (applies immediately, survives until reboot):
+ *   KP<v> KI<v> KD<v>   PID gains
+ *   MS<v>              MAX_SPEED_OFFSET_US (clamped 10..400)
+ *   ?                  print current values
  */
 void handleCalibrationInput() {
   if (!Serial.available()) return;
 
   String line = Serial.readStringUntil('\n');
   line.trim();
-  if (line.length() < 2) return;
+  if (line.length() < 1) return;
 
+  String cmd = line;
+  cmd.toUpperCase();
+
+  if (cmd == "?") {
+    printControlValues();
+    return;
+  }
+  if (cmd.startsWith("KP")) { KP = cmd.substring(2).toFloat(); Serial.printf("KP = %.2f\n", KP); return; }
+  if (cmd.startsWith("KI")) { KI = cmd.substring(2).toFloat(); panIntegral = tiltIntegral = 0.0f; Serial.printf("KI = %.2f (integrators reset)\n", KI); return; }
+  if (cmd.startsWith("KD")) { KD = cmd.substring(2).toFloat(); Serial.printf("KD = %.2f\n", KD); return; }
+  if (cmd.startsWith("MS")) { MAX_SPEED_OFFSET_US = constrain(cmd.substring(2).toFloat(), 10.0f, 400.0f); Serial.printf("MAX_SPEED_OFFSET_US = %.0f\n", MAX_SPEED_OFFSET_US); return; }
+
+  if (line.length() < 2) return;
   char axis = line.charAt(0);
-  int value = line.substring(1).toInt();
-  value = constrain(value, 1000, 2000);
+  int value = constrain(line.substring(1).toInt(), 1000, 2000);
 
   if (axis == 'P' || axis == 'p') {
     panServo.writeMicroseconds(value);
@@ -241,8 +340,13 @@ void handleCalibrationInput() {
     tiltServo.writeMicroseconds(value);
     Serial.printf("Calibration: tilt servo set to %d us\n", value);
   } else {
-    Serial.println("Calibration: unrecognized command, use \"P<us>\" or \"T<us>\" (e.g. \"P1495\")");
+    Serial.println("Unrecognized. Use P<us>/T<us>, KP<v>/KI<v>/KD<v>/MS<v>, or ?");
   }
+}
+
+void printControlValues() {
+  Serial.printf("KP=%.2f  KI=%.2f  KD=%.2f  MAX_SPEED_OFFSET_US=%.0f  DEADZONE=%.3f\n",
+                KP, KI, KD, MAX_SPEED_OFFSET_US, DEADZONE);
 }
 
 /**
@@ -269,6 +373,21 @@ float computeAxisPID(float error, float &integral, float &lastError, float dt) {
 }
 
 /**
+ * Returns true once |error| has sat at/above SATURATION_LEVEL continuously for
+ * longer than SATURATION_TIMEOUT_MS -- the sign of a diverging loop. Clears the
+ * timer as soon as the error comes back inside that band.
+ */
+bool axisDiverging(float error, unsigned long &saturatedSince) {
+  unsigned long now = millis();
+  if (fabs(error) >= SATURATION_LEVEL) {
+    if (saturatedSince == 0) saturatedSince = now;
+    return (now - saturatedSince) > SATURATION_TIMEOUT_MS;
+  }
+  saturatedSince = 0;
+  return false;
+}
+
+/**
  * PID speed control from normalized error in [-1, 1] (fraction of
  * half-frame from centre). Unlike a positional servo, there is no target
  * angle to move to and hold -- each call computes and writes the current
@@ -277,6 +396,24 @@ float computeAxisPID(float error, float &integral, float &lastError, float dt) {
  * errY means the subject is below centre.
  */
 void updateTripod(float errX, float errY) {
+  // Divergence guard: if either axis is pinned at the frame edge, the loop is
+  // running away (usually a wrong PAN_DIR/TILT_DIR). Stop both, dump the
+  // integrators, and say so once -- do not keep commanding speed.
+  if (axisDiverging(errX, panSaturatedSince) || axisDiverging(errY, tiltSaturatedSince)) {
+    panServo.writeMicroseconds(PAN_NEUTRAL_US);
+    tiltServo.writeMicroseconds(TILT_NEUTRAL_US);
+    panIntegral = 0.0f;
+    tiltIntegral = 0.0f;
+    if (!controlDiverged) {
+      Serial.println("Control DIVERGING -- |error| pinned at the frame edge. Motors stopped.");
+      Serial.println("Fix: check PAN_DIR / TILT_DIR sign (see comment at top), or the servo");
+      Serial.println("cannot keep up with the subject. Re-centre the subject to resume.");
+      controlDiverged = true;
+    }
+    return;
+  }
+  controlDiverged = false;
+
   unsigned long now = millis();
   float dt = (lastUpdateMillis == 0) ? 0.0f : (now - lastUpdateMillis) / 1000.0f;
   lastUpdateMillis = now;
@@ -284,8 +421,8 @@ void updateTripod(float errX, float errY) {
   float panOffset = computeAxisPID(errX, panIntegral, lastErrX, dt);
   float tiltOffset = computeAxisPID(errY, tiltIntegral, lastErrY, dt);
 
-  int panPulse = PAN_NEUTRAL_US - (int)panOffset;    // Flip sign if pan direction is inverted for your mounting.
-  int tiltPulse = TILT_NEUTRAL_US + (int)tiltOffset; // Flip sign if tilt direction is inverted for your mounting.
+  int panPulse = PAN_NEUTRAL_US + PAN_DIR * (int)panOffset;
+  int tiltPulse = TILT_NEUTRAL_US + TILT_DIR * (int)tiltOffset;
 
   panServo.writeMicroseconds(panPulse);
   tiltServo.writeMicroseconds(tiltPulse);
