@@ -73,6 +73,18 @@ private const val PREDICTION_HORIZON_SECONDS = 0.1f
 // instead of jumping to an arbitrary detection.
 private const val MAX_COAST_FRAMES = 15
 
+// MediaPipe hand skeleton topology: index pairs into the 21-landmark hand model
+// (0 = wrist, then thumb 1-4, index 5-8, middle 9-12, ring 13-16, pinky 17-20).
+// Used to draw the bone segments of the hand-tracking overlay.
+private val HAND_CONNECTIONS = listOf(
+    0 to 1, 1 to 2, 2 to 3, 3 to 4,        // thumb
+    0 to 5, 5 to 6, 6 to 7, 7 to 8,        // index
+    5 to 9, 9 to 10, 10 to 11, 11 to 12,   // middle
+    9 to 13, 13 to 14, 14 to 15, 15 to 16, // ring
+    13 to 17, 17 to 18, 18 to 19, 19 to 20, // pinky
+    0 to 17                                // palm base
+)
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var cameraExecutor: ExecutorService
@@ -101,6 +113,21 @@ class MainActivity : ComponentActivity() {
         val objects: List<DetectedObjectInfo>,
         val imageWidth: Int,
         val imageHeight: Int,
+        val isFrontCamera: Boolean,
+        // Normalized [0,1] hand landmarks in the upright frame, for the skeleton
+        // overlay drawn during the lock-on gesture. Empty when no hand is seen.
+        val handLandmarks: List<Offset> = emptyList(),
+        // True only on frames where the hand detector actually ran (it runs
+        // every Nth frame); lets the UI refresh the overlay without flicker on
+        // the skipped frames and clear it once the hand truly leaves.
+        val handChecked: Boolean = false
+    )
+
+    /** Latest hand skeleton to render. Landmarks are normalized [0,1] in the
+     *  upright frame; the preview fills the screen so they map straight onto it
+     *  (mirrored for the front camera, like the bounding box). */
+    data class HandOverlay(
+        val landmarks: List<Offset>,
         val isFrontCamera: Boolean
     )
 
@@ -311,6 +338,7 @@ fun CameraPreviewScreen(
 
     var cameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_BACK_CAMERA) }
     var detectionResult by remember { mutableStateOf<MainActivity.DetectionResult?>(null) }
+    var handOverlay by remember { mutableStateOf<MainActivity.HandOverlay?>(null) }
     var isTrackingEnabled by remember { mutableStateOf(true) }
     var flashMode by remember { mutableIntStateOf(ImageCapture.FLASH_MODE_OFF) }
 
@@ -357,6 +385,31 @@ fun CameraPreviewScreen(
                             size = Size(right - left, bottom - top),
                             style = Stroke(width = if (obj.isLocked) 8.dp.toPx() else 6.dp.toPx())
                         )
+                    }
+                }
+
+                // Hand skeleton overlay -- drawn while the lock-on gesture is
+                // available (i.e. not yet locked) so the user can see the hand
+                // being recognized before the open palm picks a subject.
+                if (lockedId == null) {
+                    handOverlay?.let { hand ->
+                        if (hand.landmarks.size >= 21) {
+                            val pts = hand.landmarks.map { lm ->
+                                val x = lm.x * size.width
+                                Offset(if (hand.isFrontCamera) size.width - x else x, lm.y * size.height)
+                            }
+                            HAND_CONNECTIONS.forEach { (a, b) ->
+                                drawLine(
+                                    color = Color(0xFF00E5FF),
+                                    start = pts[a],
+                                    end = pts[b],
+                                    strokeWidth = 3.dp.toPx()
+                                )
+                            }
+                            pts.forEach { p ->
+                                drawCircle(color = Color.White, radius = 4.dp.toPx(), center = p)
+                            }
+                        }
                     }
                 }
             }
@@ -486,7 +539,15 @@ fun CameraPreviewScreen(
                             onLostFrameCountChanged = { lostFrameCount = it }
                         ) { update, result ->
                             onTargetDetected(update)
-                            detectionResult = result
+                            detectionResult = if (result.objects.isEmpty()) null else result
+                            if (result.handChecked) {
+                                handOverlay = if (result.handLandmarks.size >= 21) {
+                                    MainActivity.HandOverlay(
+                                        landmarks = result.handLandmarks,
+                                        isFrontCamera = result.isFrontCamera
+                                    )
+                                } else null
+                            }
                         }
                     } else {
                         imageProxy.close()
@@ -602,7 +663,7 @@ private fun processImageProxy(
     shouldDetectHands: Boolean,
     onSetLockedId: (Int?) -> Unit,
     onLostFrameCountChanged: (Int) -> Unit,
-    onResult: (MainActivity.TrackingUpdate, MainActivity.DetectionResult?) -> Unit
+    onResult: (MainActivity.TrackingUpdate, MainActivity.DetectionResult) -> Unit
 ) {
     val mediaImage = imageProxy.image
     if (mediaImage != null) {
@@ -618,6 +679,7 @@ private fun processImageProxy(
         var openPalmDetected = false
         var palmX = 0f
         var palmY = 0f
+        var handLandmarks: List<Offset> = emptyList()
 
         // Only detect hands periodically to save resources and prevent crashes
         if (shouldDetectHands) {
@@ -630,6 +692,9 @@ private fun processImageProxy(
                     val result = landmarker.detect(mpImage)
                     if (result.landmarks().isNotEmpty()) {
                         val hand = result.landmarks()[0]
+                        // Keep the full 21-point skeleton (normalized) for the
+                        // overlay, regardless of pose.
+                        handLandmarks = hand.map { Offset(it.x(), it.y()) }
                         val isExtended = hand[8].y() < hand[6].y() && hand[12].y() < hand[10].y() &&
                                         hand[16].y() < hand[14].y() && hand[20].y() < hand[18].y()
                         if (isExtended) {
@@ -726,9 +791,11 @@ private fun processImageProxy(
                     objects = objectInfos,
                     imageWidth = frameWidth,
                     imageHeight = frameHeight,
-                    isFrontCamera = isFrontCamera
+                    isFrontCamera = isFrontCamera,
+                    handLandmarks = handLandmarks,
+                    handChecked = shouldDetectHands
                 )
-                onResult(update, if (detectedObjects.isEmpty()) null else result)
+                onResult(update, result)
             }
             .addOnCompleteListener {
                 imageProxy.close()

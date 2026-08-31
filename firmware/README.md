@@ -49,12 +49,22 @@ Where `EX`/`EY` are the subject's X/Y offset from frame center, normalized to `[
 monotonically increasing packet sequence number used to detect and drop
 out-of-order or duplicate packets.
 
-The firmware applies proportional speed control: `speed = NEUTRAL +/- clamp(KP * error, -MAX_SPEED_OFFSET, MAX_SPEED_OFFSET)`
+The firmware applies PID speed control in raw microseconds:
+`pulse_us = NEUTRAL_US +/- clamp(KP*error + KI*integral, -MAX_SPEED_OFFSET_US, MAX_SPEED_OFFSET_US)`
 per axis, so rotation speed scales with how far off-center the subject is. When `|error|`
-is within `DEADZONE`, the firmware writes `NEUTRAL` (stop) instead of a speed offset.
-Tune `KP`, `MAX_SPEED_OFFSET`, and `DEADZONE` at the top of `camx_tripod.ino` for your
-servos and desired responsiveness.
+is within `DEADZONE`, the firmware writes `NEUTRAL_US` (stop) instead of a speed offset.
+Tune `KP`, `KI`, `MAX_SPEED_OFFSET_US`, and `DEADZONE` at the top of `camx_tripod.ino` for
+your servos and desired responsiveness.
 
-`NEUTRAL` (default 90) is the pulse value that stops your specific continuous-rotation
-servo. Cheap units are rarely trimmed exactly to 90 -- if a servo still creeps slowly with
-no error signal applied, nudge `NEUTRAL` up or down by 1-2 until it holds still.
+`PAN_NEUTRAL_US` / `TILT_NEUTRAL_US` (default 1500) is the pulse width, in microseconds,
+that stops that specific continuous-rotation servo. The firmware drives the servos with
+`writeMicroseconds()` rather than the 0-180 `write()` overload on purpose: `write(90)`
+against the 500-2400 us attach range emits 1450 us, not 1500, and that standing ~50 us
+bias is enough to make an otherwise well-centered servo creep one direction forever.
+
+If a servo still creeps with no error signal applied, or only ever spins one way no matter
+which direction the subject moves, its neutral is off. Open the Serial Monitor (115200
+baud) and send `P<us>` or `T<us>` (e.g. `P1495`) to write a raw pulse width to the pan or
+tilt servo directly; find the value where it holds still and set `PAN_NEUTRAL_US` /
+`TILT_NEUTRAL_US` to match. Pan and tilt are separate physical units and usually need
+slightly different values.
