@@ -113,6 +113,30 @@ const float MAX_SPEED_OFFSET_US = 90.0f;  // Max offset from NEUTRAL (us) ~= 150
 const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulated integral (unit-error-seconds): ~50 us
                                          // of bias authority at KI above, enough for neutral mistrim + tilt gravity.
 
+// Feedback direction per axis. The pulse written is
+//   NEUTRAL_US + DIR * offset
+// so DIR sets which way each servo turns for a given error. This is the ONE
+// thing that depends on your servo wiring and how the pan/tilt head is
+// assembled, and getting it wrong makes the loop DIVERGE: the servo drives the
+// subject further off-centre until it spins at full speed. Bring-up procedure:
+//   1. Serial-send "P1560" (neutral + 60). Note which way pan turns.
+//   2. Aim the camera at a subject to the RIGHT of centre. Pan must turn the
+//      camera RIGHT (toward the subject) to track it.
+//   3. If "P1560" turned the camera right, PAN_DIR = +1; if left, PAN_DIR = -1.
+//   4. Same for tilt with "T1560": a subject BELOW centre needs the camera to
+//      tilt DOWN.
+// The SATURATION_* guard below will stop the motors (not spin forever) if this
+// is still wrong, but fix the sign -- don't rely on the guard.
+const int PAN_DIR  = -1;
+const int TILT_DIR = +1;
+
+// Divergence guard. A correctly-wired loop pulls |error| back toward 0. If
+// |error| instead stays pinned at the frame edge for this long, the loop is
+// diverging (wrong *_DIR, or the servo physically can't keep up) -- stop the
+// motors and say so, rather than spin at full speed until the app is closed.
+const float SATURATION_LEVEL = 0.97f;
+const unsigned long SATURATION_TIMEOUT_MS = 1500;
+
 // If no UDP packet arrives within this long, stop both motors. Without this,
 // losing WiFi or closing the app would leave a continuous-rotation servo
 // spinning at its last commanded speed forever.
@@ -125,6 +149,11 @@ Servo tiltServo;
 
 unsigned long lastPacketMillis = 0;
 bool motorsStopped = true;
+
+// Divergence-guard state (see SATURATION_* above)
+unsigned long panSaturatedSince = 0;
+unsigned long tiltSaturatedSince = 0;
+bool controlDiverged = false;
 
 // Per-axis PID state
 float panIntegral = 0.0f;
@@ -242,6 +271,9 @@ void loop() {
     panServo.writeMicroseconds(PAN_NEUTRAL_US);
     tiltServo.writeMicroseconds(TILT_NEUTRAL_US);
     motorsStopped = true;
+    panSaturatedSince = 0;
+    tiltSaturatedSince = 0;
+    controlDiverged = false;
     Serial.println("Signal lost -- motors stopped");
   }
 }
@@ -299,6 +331,21 @@ float computeAxisPID(float error, float &integral, float &lastError, float dt) {
 }
 
 /**
+ * Returns true once |error| has sat at/above SATURATION_LEVEL continuously for
+ * longer than SATURATION_TIMEOUT_MS -- the sign of a diverging loop. Clears the
+ * timer as soon as the error comes back inside that band.
+ */
+bool axisDiverging(float error, unsigned long &saturatedSince) {
+  unsigned long now = millis();
+  if (fabs(error) >= SATURATION_LEVEL) {
+    if (saturatedSince == 0) saturatedSince = now;
+    return (now - saturatedSince) > SATURATION_TIMEOUT_MS;
+  }
+  saturatedSince = 0;
+  return false;
+}
+
+/**
  * PID speed control from normalized error in [-1, 1] (fraction of
  * half-frame from centre). Unlike a positional servo, there is no target
  * angle to move to and hold -- each call computes and writes the current
@@ -307,6 +354,24 @@ float computeAxisPID(float error, float &integral, float &lastError, float dt) {
  * errY means the subject is below centre.
  */
 void updateTripod(float errX, float errY) {
+  // Divergence guard: if either axis is pinned at the frame edge, the loop is
+  // running away (usually a wrong PAN_DIR/TILT_DIR). Stop both, dump the
+  // integrators, and say so once -- do not keep commanding speed.
+  if (axisDiverging(errX, panSaturatedSince) || axisDiverging(errY, tiltSaturatedSince)) {
+    panServo.writeMicroseconds(PAN_NEUTRAL_US);
+    tiltServo.writeMicroseconds(TILT_NEUTRAL_US);
+    panIntegral = 0.0f;
+    tiltIntegral = 0.0f;
+    if (!controlDiverged) {
+      Serial.println("Control DIVERGING -- |error| pinned at the frame edge. Motors stopped.");
+      Serial.println("Fix: check PAN_DIR / TILT_DIR sign (see comment at top), or the servo");
+      Serial.println("cannot keep up with the subject. Re-centre the subject to resume.");
+      controlDiverged = true;
+    }
+    return;
+  }
+  controlDiverged = false;
+
   unsigned long now = millis();
   float dt = (lastUpdateMillis == 0) ? 0.0f : (now - lastUpdateMillis) / 1000.0f;
   lastUpdateMillis = now;
@@ -314,8 +379,8 @@ void updateTripod(float errX, float errY) {
   float panOffset = computeAxisPID(errX, panIntegral, lastErrX, dt);
   float tiltOffset = computeAxisPID(errY, tiltIntegral, lastErrY, dt);
 
-  int panPulse = PAN_NEUTRAL_US - (int)panOffset;    // Flip sign if pan direction is inverted for your mounting.
-  int tiltPulse = TILT_NEUTRAL_US + (int)tiltOffset; // Flip sign if tilt direction is inverted for your mounting.
+  int panPulse = PAN_NEUTRAL_US + PAN_DIR * (int)panOffset;
+  int tiltPulse = TILT_NEUTRAL_US + TILT_DIR * (int)tiltOffset;
 
   panServo.writeMicroseconds(panPulse);
   tiltServo.writeMicroseconds(tiltPulse);

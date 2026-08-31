@@ -87,9 +87,24 @@ measure the three inputs on your rig and recompute:
    video). Then `w_c = (pi/2 - PM_rad - 0.17) / L` and recompute `KP`, `KI` above.
 
 If tilt visibly lags pan (gravity load on that axis), raise the shared `KP`/`KI` ~25% or
-split them into per-axis constants. If the servo runs *away* from the subject instead of
-recentering, the feedback sign is wrong for your mounting -- flip the `+`/`-` on that
-axis's line in `updateTripod()`.
+split them into per-axis constants.
+
+## Feedback direction (do this before the first app run)
+
+The pulse written per axis is `NEUTRAL_US + DIR * offset`, where `PAN_DIR` / `TILT_DIR`
+(`+1` or `-1`, top of `camx_tripod.ino`) set which way each servo turns for a given error.
+This depends entirely on your servo wiring and how the pan/tilt head is assembled, and a
+**wrong sign makes the loop diverge** -- the servo drives the subject further off-centre
+until it is spinning at full speed. Set it deliberately:
+
+1. Serial-send `P1560` (neutral + 60). Note which way the camera pans.
+2. A subject to the **right** of frame centre must make the camera pan **right** (toward
+   it). If `P1560` panned right, `PAN_DIR = +1`; if it panned left, `PAN_DIR = -1`.
+3. Same for tilt with `T1560`: a subject **below** centre needs the camera to tilt **down**.
+
+As a backstop, if `|error|` stays pinned at the frame edge for `SATURATION_TIMEOUT_MS`
+(1.5 s) the firmware stops both motors and prints `Control DIVERGING` rather than spinning
+forever -- but treat that as "the sign is still wrong," not a fix.
 
 `PAN_NEUTRAL_US` / `TILT_NEUTRAL_US` (default 1500) is the pulse width, in microseconds,
 that stops that specific continuous-rotation servo. The firmware drives the servos with
