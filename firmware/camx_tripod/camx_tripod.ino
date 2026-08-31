@@ -9,7 +9,6 @@
  *   versions predate the core 3.x LEDC API rewrite and will not compile.
  *
  * Features:
- * - mDNS advertisement as "_arduino._tcp" (for future discovery tooling)
  * - UDP normalized-error parsing (EX:value,EY:value,SEQ:value)
  * - Proportional (P) servo control with deadzone
  *
@@ -20,14 +19,12 @@
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <ESPmDNS.h>
 #include <ESP32Servo.h>
 #include <string.h>
 
 // --- Configuration ---
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
-const char* deviceName = "CamX-Tripod";
+const char* ssid = "Tab";
+const char* password = "12345678";
 const int udpPort = 4210;
 
 // Servo Pins (Adjust based on your wiring).
@@ -86,14 +83,6 @@ void setup() {
   Serial.println("\nWiFi Connected!");
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
-
-  // Advertise over mDNS for future discovery tooling
-  if (!MDNS.begin(deviceName)) {
-    Serial.println("Error setting up MDNS responder!");
-  } else {
-    Serial.println("mDNS responder started");
-    MDNS.addService("arduino", "tcp", udpPort);
-  }
 
   // Start UDP
   udp.begin(udpPort);
