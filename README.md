@@ -9,6 +9,7 @@ CamX is a technical Android application designed to interface with motorized tri
 - Resolution-Independent Localization: Transmits a normalized X/Y error in [-1, 1] to the hardware layer, decoupled from camera resolution and orientation.
 - Connectivity: Manual IP/port configuration to link with tripod hardware on the local Wi-Fi network.
 - Diagnostic Tools: Includes connection testing with custom payloads and telemetry logging in CSV format.
+- Battery Readout: The tripod's INA219 fuel gauge streams pack state of charge back over the same UDP link; the camera screen shows a live battery indicator (%, voltage, colour-coded).
 - Comprehensive Camera Control: Provides high-resolution photo capture, video recording with audio, and hardware flip capabilities.
 
 ## Architecture and Workflow
@@ -24,6 +25,7 @@ The localization process follows a multi-stage pipeline:
 ### 2. Communication Protocol
 - Hardware Link: UDP (User Datagram Protocol) is utilized for minimum latency transmission.
 - Payload Format: "EX:[FLOAT],EY:[FLOAT],SEQ:[UINT]" -- normalized error per axis plus a sequence number for loss/reorder detection.
+- Reverse Telemetry: The firmware replies on the same socket with "BATT:[%],MV:[mV],MA:[mA],WH:[Wh]" every ~2s for the on-screen battery indicator.
 - Configuration: The IP address and port of the ESP32 are entered manually in the connection settings.
 
 ## Project Structure
@@ -35,7 +37,7 @@ The localization process follows a multi-stage pipeline:
 
 ## Setup Requirements
 
-- Hardware: ESP32-based microcontroller with servo motor integration. See [firmware folder](./firmware) for details.
+- Hardware: ESP32-based microcontroller with servo motor integration, plus an INA219 sensor on the battery for charge monitoring. See [firmware folder](./firmware) for details.
 - Network: Android device and ESP32 must reside on the same subnet.
 - Configuration: Tripod parameters (IP and Port) are managed via the in-app connection settings.
 - AI Assets: Ensure hand_landmarker.task is present in the assets folder.

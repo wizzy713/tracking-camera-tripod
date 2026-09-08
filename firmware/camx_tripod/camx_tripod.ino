@@ -21,6 +21,11 @@
  * - Loss-of-signal failsafe: stops both motors if no UDP packet has been
  *   received recently, so a dropped connection or closed app can't leave a
  *   continuous-rotation servo spinning indefinitely.
+ * - Battery monitoring via an INA219 high-side current/voltage sensor wired
+ *   BEFORE the 5 V regulator, so it sees the raw 2S Li-ion pack. A blended
+ *   coulomb-count + open-circuit-voltage fuel gauge turns those readings into a
+ *   state-of-charge percentage, sent back to the app as a UDP reply so the
+ *   camera screen can show remaining battery. See the "Battery" config block.
  *
  * No code changes are needed to benefit from WiFi 6 -- the C6 negotiates
  * 802.11ax automatically against a WiFi 6 access point via the same
@@ -30,6 +35,9 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <ESP32Servo.h>
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+#include <math.h>
 #include <string.h>
 
 // --- Configuration ---
@@ -150,10 +158,74 @@ const unsigned long SATURATION_TIMEOUT_MS = 1500;
 // spinning at its last commanded speed forever.
 const unsigned long SIGNAL_TIMEOUT_MS = 500;
 
+// --- Battery monitor (INA219) ---
+//
+// Wiring: the INA219 sits on the HIGH SIDE of the pack, BEFORE the 5 V
+// regulator, so it measures the full 2S Li-ion voltage (~6.0-8.4 V) and the
+// total current the whole rig draws (regulator + servos + ESP32):
+//
+//   pack + ---> [INA219 IN+]--shunt--[INA219 IN-] ---> regulator IN / Vin
+//   pack - ---> common ground (regulator GND, ESP32 GND, servo GND)
+//   INA219 VCC ---> ESP32 3V3      INA219 GND ---> common ground
+//   INA219 SDA ---> GPIO INA_SDA_PIN   INA219 SCL ---> GPIO INA_SCL_PIN
+//
+// I2C pins: pick from the ESP32-C6 "safe" list in the servo-pin comment above.
+// GPIO6/7 are broken out on both DevKitC-1 and DevKitM-1 and are not strapping
+// or USB pins. Default INA219 I2C address is 0x40 (both A0/A1 straps low).
+const int INA_SDA_PIN = 6;
+const int INA_SCL_PIN = 7;
+const uint8_t INA_I2C_ADDR = 0x40;   // INA219_ADDRESS is a macro in the library
+
+// Pack spec (from the cells' datasheet): 2S Li-ion, 2 x 3.7 V nominal, 2600 mAh,
+// 9.62 Wh. Full charge is 4.2 V/cell (8.4 V pack); empty is 3.0 V/cell (6.0 V).
+const int   BATT_CELLS        = 2;
+const float BATT_CAPACITY_MAH = 2600.0f;
+const float BATT_ENERGY_WH    = 9.62f;
+
+// Whole-pack internal resistance estimate, used to turn a loaded terminal
+// voltage back into open-circuit voltage (OCV) for the voltage-based SoC:
+//   OCV ~= V_terminal + I_discharge * R.
+// ~75 mOhm/cell is typical for a mid-grade 18650 in a 2S pack; measure yours
+// (dV across a known current step) and refine if the gauge drifts under load.
+const float BATT_IR_OHMS = 0.15f;
+
+// INA219 current sign. The library reports current POSITIVE when it flows from
+// IN+ to IN-. With IN+ on the pack + terminal and IN- toward the regulator,
+// discharge is positive -> leave this +1. If the app ever shows a negative
+// current while the rig is clearly running, the shunt is reversed: set -1.
+const int INA_CURRENT_SIGN = 1;
+
+// Below this |current| the terminal voltage is close enough to OCV to trust the
+// voltage-based SoC and pull the coulomb counter toward it (drift correction).
+const float BATT_REST_CURRENT_MA = 150.0f;
+
+const unsigned long BATT_SAMPLE_INTERVAL_MS    = 250;   // fuel-gauge update rate
+const unsigned long BATT_TELEMETRY_INTERVAL_MS = 2000;  // how often we tell the app
+const unsigned long BATT_PRINT_INTERVAL_MS     = 5000;  // Serial debug print rate
+
 // --- Global Objects ---
 WiFiUDP udp;
 Servo panServo;
 Servo tiltServo;
+
+Adafruit_INA219 ina219(INA_I2C_ADDR);
+bool inaPresent = false;
+
+// Fuel-gauge state. battChargeMah is the estimated charge left in the pack;
+// battSoC is that as a 0..1 fraction of BATT_CAPACITY_MAH.
+float battChargeMah = BATT_CAPACITY_MAH;
+float battSoC       = 1.0f;
+float battPackV     = 0.0f;   // last pack terminal voltage (V)
+float battCurrentMa = 0.0f;   // last current, + = discharge
+unsigned long lastBattSampleMs    = 0;
+unsigned long lastBattTelemetryMs = 0;
+unsigned long lastBattPrintMs     = 0;
+
+// Where to send battery telemetry: learned from the source address of the
+// app's incoming EX/EY packets, so replies go back on the same UDP flow.
+IPAddress appIP;
+uint16_t  appPort = 0;
+bool      haveApp = false;
 
 unsigned long lastPacketMillis = 0;
 bool motorsStopped = true;
@@ -213,6 +285,20 @@ void setup() {
   Serial.println("Note: live UDP tracking overwrites a P/T calibration write on the next packet.");
   printControlValues();
 
+  // Battery monitor. Non-fatal if absent -- the tripod still tracks, it just
+  // won't report battery.
+  Wire.begin(INA_SDA_PIN, INA_SCL_PIN);
+  if (ina219.begin()) {
+    inaPresent = true;
+    // Default calibration is 32 V / 2 A (higher current resolution than the
+    // 32 V / 3.2 A max range). Servo-stall spikes can briefly exceed 2 A and
+    // will read clipped, but they're too short to matter to the coulomb count.
+    Serial.println("INA219 battery monitor online");
+    initBatteryGauge();
+  } else {
+    Serial.println("INA219 NOT found -- battery telemetry disabled (check SDA/SCL wiring and addr 0x40)");
+  }
+
   // Connect to WiFi
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
@@ -246,6 +332,12 @@ void loop() {
     packetBuffer[len] = 0;
     memcpy(latestPacket, packetBuffer, len + 1);
     latestLen = len;
+
+    // Remember who is talking to us so battery telemetry can go back on the
+    // same flow (the app receives on the socket it sends from).
+    appIP = udp.remoteIP();
+    appPort = udp.remotePort();
+    haveApp = true;
   }
 
   if (latestLen > 0) {
@@ -296,6 +388,11 @@ void loop() {
     controlDiverged = false;
     Serial.println("Signal lost -- motors stopped");
   }
+
+  // Battery fuel gauge + telemetry. Both self-throttle, so calling them every
+  // loop is cheap.
+  updateBatteryGauge();
+  sendBatteryTelemetry();
 }
 
 /**
@@ -322,6 +419,7 @@ void handleCalibrationInput() {
 
   if (cmd == "?") {
     printControlValues();
+    printBatteryStatus();
     return;
   }
   if (cmd.startsWith("KP")) { KP = cmd.substring(2).toFloat(); Serial.printf("KP = %.2f\n", KP); return; }
@@ -347,6 +445,158 @@ void handleCalibrationInput() {
 void printControlValues() {
   Serial.printf("KP=%.2f  KI=%.2f  KD=%.2f  MAX_SPEED_OFFSET_US=%.0f  DEADZONE=%.3f\n",
                 KP, KI, KD, MAX_SPEED_OFFSET_US, DEADZONE);
+}
+
+void printBatteryStatus() {
+  if (!inaPresent) {
+    Serial.println("Battery: INA219 not present");
+    return;
+  }
+  Serial.printf("Battery: %.0f%%  %.2f V  %.0f mA  %.2f/%.2f Wh  (%.0f/%.0f mAh)\n",
+                battSoC * 100.0f, battPackV, battCurrentMa,
+                battSoC * BATT_ENERGY_WH, BATT_ENERGY_WH,
+                battChargeMah, BATT_CAPACITY_MAH);
+}
+
+/**
+ * Open-circuit-voltage -> state-of-charge for ONE Li-ion cell, as a
+ * piecewise-linear curve through resting-voltage / SoC points typical of a
+ * generic 18650. The pack curve is this evaluated at OCV / BATT_CELLS. The
+ * nominal 3.7 V/cell sits at ~50%, matching the cell datasheet.
+ */
+float cellOcvToSoC(float v) {
+  static const float pts[][2] = {
+    {3.00f, 0.00f}, {3.20f, 0.03f}, {3.30f, 0.07f}, {3.40f, 0.12f},
+    {3.50f, 0.20f}, {3.60f, 0.35f}, {3.70f, 0.50f}, {3.80f, 0.62f},
+    {3.90f, 0.74f}, {4.00f, 0.85f}, {4.10f, 0.94f}, {4.20f, 1.00f}
+  };
+  const int n = sizeof(pts) / sizeof(pts[0]);
+  if (v <= pts[0][0]) return 0.0f;
+  if (v >= pts[n - 1][0]) return 1.0f;
+  for (int i = 1; i < n; i++) {
+    if (v < pts[i][0]) {
+      float t = (v - pts[i - 1][0]) / (pts[i][0] - pts[i - 1][0]);
+      return pts[i - 1][1] + t * (pts[i][1] - pts[i - 1][1]);
+    }
+  }
+  return 1.0f;
+}
+
+/** One INA219 read -> pack terminal voltage (V) and signed current (mA). */
+void readBattery(float &packV, float &currentMa) {
+  float shuntmV = ina219.getShuntVoltage_mV();
+  float busV    = ina219.getBusVoltage_V();   // measured at IN- (regulator side)
+  currentMa = ina219.getCurrent_mA() * INA_CURRENT_SIGN;
+  // Bus voltage is the load side of the shunt; add the shunt drop back to get
+  // the actual pack terminal voltage.
+  packV = busV + shuntmV / 1000.0f;
+}
+
+/**
+ * Seed the fuel gauge from the pack's open-circuit voltage at boot. This is the
+ * only absolute reference the coulomb counter gets until the pack next rests, so
+ * if you power on under heavy load the initial % can be a few points low until
+ * the rest-correction in updateBatteryGauge() catches up.
+ */
+void initBatteryGauge() {
+  readBattery(battPackV, battCurrentMa);
+  float ocv = battPackV + (battCurrentMa / 1000.0f) * BATT_IR_OHMS;
+  battSoC = cellOcvToSoC(ocv / BATT_CELLS);
+  battChargeMah = battSoC * BATT_CAPACITY_MAH;
+  lastBattSampleMs = millis();
+  Serial.printf("Battery init: pack %.2f V, OCV %.2f V -> %.0f%%\n",
+                battPackV, ocv, battSoC * 100.0f);
+  updateBatteryLed();
+}
+
+/**
+ * Blended fuel gauge, run every BATT_SAMPLE_INTERVAL_MS:
+ *   1. Coulomb count -- integrate current out of battChargeMah. Precise
+ *      short-term, but drifts over hours (sensor offset, unmodelled loads).
+ *   2. Voltage estimate -- OCV (IR-compensated) through the cell curve.
+ *      Absolute but noisy under load and flat in the mid-SoC plateau.
+ *   3. Fuse -- near rest, trust the voltage and pull the counter toward it.
+ *      Under load, only let the voltage estimate DRAG THE COUNTER DOWN (never
+ *      up), so a stale counter can't mask a nearly-flat pack, but voltage sag
+ *      under a servo surge can't make the gauge jump around either.
+ */
+void updateBatteryGauge() {
+  if (!inaPresent) return;
+  unsigned long now = millis();
+  if (now - lastBattSampleMs < BATT_SAMPLE_INTERVAL_MS) return;
+  float dtHours = (now - lastBattSampleMs) / 3600000.0f;
+  lastBattSampleMs = now;
+
+  readBattery(battPackV, battCurrentMa);
+
+  // 1. Coulomb counting.
+  battChargeMah -= battCurrentMa * dtHours;
+  battChargeMah = constrain(battChargeMah, 0.0f, BATT_CAPACITY_MAH);
+
+  // 2. Voltage-based estimate.
+  float ocv    = battPackV + (battCurrentMa / 1000.0f) * BATT_IR_OHMS;
+  float mahV   = cellOcvToSoC(ocv / BATT_CELLS) * BATT_CAPACITY_MAH;
+
+  // 3. Fuse.
+  if (fabs(battCurrentMa) < BATT_REST_CURRENT_MA) {
+    battChargeMah += 0.02f * (mahV - battChargeMah);         // converge over ~30 s at rest
+  } else if (mahV < battChargeMah) {
+    battChargeMah += 0.005f * (mahV - battChargeMah);        // slow one-sided pull-down under load
+  }
+  battChargeMah = constrain(battChargeMah, 0.0f, BATT_CAPACITY_MAH);
+  battSoC = battChargeMah / BATT_CAPACITY_MAH;
+
+  updateBatteryLed();
+
+  if (now - lastBattPrintMs >= BATT_PRINT_INTERVAL_MS) {
+    lastBattPrintMs = now;
+    printBatteryStatus();
+  }
+}
+
+/**
+ * Encode state of charge on the onboard RGB LED, kept dim so it stays a status
+ * light and not a torch: green > 50%, amber 20-50%, steady red 10-20%, blinking
+ * red < 10%. Falls back to the plain LED_BUILTIN (on = not critical) on boards
+ * with no addressable LED.
+ */
+void updateBatteryLed() {
+#if defined(RGB_BUILTIN)
+  uint8_t r = 0, g = 0, b = 0;
+  if (battSoC > 0.50f)      { g = 40; }
+  else if (battSoC > 0.20f) { r = 40; g = 25; }
+  else if (battSoC > 0.10f) { r = 40; }
+  else                      { r = ((millis() / 500) % 2 == 0) ? 60 : 0; }
+  neopixelWrite(RGB_BUILTIN, r, g, b);
+#elif defined(LED_BUILTIN)
+  digitalWrite(LED_BUILTIN, battSoC > 0.10f ? HIGH : (((millis() / 500) % 2 == 0) ? HIGH : LOW));
+#endif
+}
+
+/**
+ * Send the current battery state back to the app as a UDP reply on the same
+ * flow the EX/EY packets arrive on. Format mirrors the app->firmware protocol
+ * (KEY:value, comma-separated):
+ *   BATT:<percent 0-100>,MV:<pack millivolts>,MA:<current mA, + = discharge>,WH:<Wh remaining>
+ */
+void sendBatteryTelemetry() {
+  if (!inaPresent || !haveApp) return;
+  unsigned long now = millis();
+  if (now - lastBattTelemetryMs < BATT_TELEMETRY_INTERVAL_MS) return;
+  lastBattTelemetryMs = now;
+
+  int pct = (int) lroundf(battSoC * 100.0f);
+  pct = constrain(pct, 0, 100);
+  char msg[96];
+  int len = snprintf(msg, sizeof(msg), "BATT:%d,MV:%d,MA:%d,WH:%.2f",
+                     pct,
+                     (int) lroundf(battPackV * 1000.0f),
+                     (int) lroundf(battCurrentMa),
+                     battSoC * BATT_ENERGY_WH);
+  if (len <= 0) return;
+  udp.beginPacket(appIP, appPort);
+  udp.write((const uint8_t *) msg, len);
+  udp.endPacket();
 }
 
 /**

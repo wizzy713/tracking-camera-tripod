@@ -27,6 +27,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -35,6 +36,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -55,6 +57,7 @@ import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.ObjectDetector
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ExecutorService
@@ -72,6 +75,12 @@ private const val PREDICTION_HORIZON_SECONDS = 0.1f
 // is released. During this window the system coasts on the Kalman prediction
 // instead of jumping to an arbitrary detection.
 private const val MAX_COAST_FRAMES = 15
+
+// Debug: feed the battery overlay a synthetic, slowly-draining value so it can
+// be demoed without the INA219 hardware / firmware telemetry connected. When
+// false (the normal state) the overlay shows a "no tripod data" placeholder
+// until a real BATT packet arrives from UdpSender.onBattery.
+private const val DEBUG_FAKE_BATTERY = false
 
 // MediaPipe hand skeleton topology: index pairs into the 21-landmark hand model
 // (0 = wrist, then thumb 1-4, index 5-8, middle 9-12, ring 13-16, pinky 17-20).
@@ -101,6 +110,7 @@ class MainActivity : ComponentActivity() {
     private var lockedId by mutableStateOf<Int?>(null)
     private var permissionsGranted by mutableStateOf(false)
     private var packetSeq = 0L
+    private var batteryStatus by mutableStateOf<BatteryStatus?>(null)
 
     data class DetectedObjectInfo(
         val boundingBox: Rect,
@@ -178,6 +188,12 @@ class MainActivity : ComponentActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
         logManager = LogManager(this)
 
+        // Battery telemetry from the tripod's INA219 fuel gauge (UDP reply).
+        udpSender.onBattery = { status ->
+            Log.d("CamX", "battery telemetry: $status")
+            runOnUiThread { batteryStatus = status }
+        }
+
         thread { setupHandLandmarker() }
 
         permissionsGranted = allPermissionsGranted()
@@ -225,6 +241,24 @@ class MainActivity : ComponentActivity() {
             udpSender.updateTarget(esp32Ip, udpPort)
         }
 
+        if (DEBUG_FAKE_BATTERY) {
+            LaunchedEffect(Unit) {
+                var pct = (62..96).random()
+                while (true) {
+                    batteryStatus = BatteryStatus(
+                        percent = pct,
+                        // ~6.0 V empty .. ~8.4 V full for a 2S pack.
+                        millivolts = (6000 + pct * 24).coerceIn(6000, 8400),
+                        milliamps = (220..880).random(),
+                        whRemaining = pct / 100f * 9.62f
+                    )
+                    delay(3000)
+                    pct -= (0..1).random()
+                    if (pct < 12) pct = (86..97).random() // loop for a continuous demo
+                }
+            }
+        }
+
         if (currentScreen == "settings") {
             BackHandler { currentScreen = "camera" }
             ConnectionScreen(
@@ -259,6 +293,7 @@ class MainActivity : ComponentActivity() {
                 },
                 onOpenSettings = { currentScreen = "settings" },
                 lockedId = lockedId,
+                battery = batteryStatus,
                 onUnlock = { lockedId = null },
                 onTargetUpdate = { id -> lockedId = id }
             ) { update ->
@@ -328,6 +363,7 @@ fun CameraPreviewScreen(
     onToggleLogging: (Boolean) -> Unit,
     onOpenSettings: () -> Unit,
     lockedId: Int?,
+    battery: BatteryStatus?,
     onUnlock: () -> Unit,
     onTargetUpdate: (Int?) -> Unit,
     onTargetDetected: (MainActivity.TrackingUpdate) -> Unit
@@ -474,6 +510,11 @@ fun CameraPreviewScreen(
             }
         }
 
+        BatteryIndicator(
+            battery = battery,
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 72.dp, end = 16.dp)
+        )
+
         Row(
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -573,6 +614,84 @@ fun CameraPreviewScreen(
             } finally {
                 objectDetector.close()
             }
+        }
+    }
+}
+
+/**
+ * Compact battery readout for the camera overlay: a fill-level glyph plus the
+ * percentage and pack voltage from the tripod's INA219 fuel gauge. Colour tracks
+ * charge (green > 50%, amber 20-50%, red < 20%). Until the first telemetry
+ * packet arrives it shows a dim "no data" placeholder, so the feature is
+ * visibly present even before the tripod is connected.
+ */
+@Composable
+fun BatteryIndicator(battery: BatteryStatus?, modifier: Modifier = Modifier) {
+    val levelColor = when {
+        battery == null -> Color.White.copy(alpha = 0.5f)
+        battery.milliamps < -20 -> Color(0xFF4CAF50) // negative current => charging
+        battery.percent > 50 -> Color(0xFF4CAF50)
+        battery.percent > 20 -> Color(0xFFFFB300)
+        else -> Color(0xFFE53935)
+    }
+
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color.Black.copy(alpha = 0.45f))
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Canvas(modifier = Modifier.size(width = 26.dp, height = 13.dp)) {
+            val stroke = 1.5.dp.toPx()
+            val nubW = 2.dp.toPx()
+            val bodyW = size.width - nubW
+            val corner = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+            val outline = if (battery == null) Color.White.copy(alpha = 0.5f) else Color.White
+
+            drawRoundRect(
+                color = outline,
+                topLeft = Offset(0f, 0f),
+                size = Size(bodyW, size.height),
+                cornerRadius = corner,
+                style = Stroke(width = stroke)
+            )
+            drawRoundRect(
+                color = outline,
+                topLeft = Offset(bodyW, size.height * 0.28f),
+                size = Size(nubW, size.height * 0.44f),
+                cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx())
+            )
+            if (battery != null) {
+                val pad = stroke + 1.dp.toPx()
+                val trackW = bodyW - 2 * pad
+                val fillW = (trackW * (battery.percent / 100f)).coerceIn(0f, trackW)
+                drawRoundRect(
+                    color = levelColor,
+                    topLeft = Offset(pad, pad),
+                    size = Size(fillW, size.height - 2 * pad),
+                    cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx())
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(6.dp))
+
+        Column {
+            Text(
+                text = if (battery != null) "${battery.percent}%" else "-- %",
+                color = if (battery != null) Color.White else Color.White.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.labelLarge
+            )
+            Text(
+                text = if (battery != null) {
+                    String.format(Locale.US, "%.2f V", battery.millivolts / 1000f)
+                } else {
+                    "no tripod data"
+                },
+                color = Color.White.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.labelSmall
+            )
         }
     }
 }

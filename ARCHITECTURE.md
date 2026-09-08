@@ -9,7 +9,7 @@ The project follows a modular structure to separate concerns between the UI, the
 - src/main/java/com/example/tripodtracker/:
     - MainActivity.kt: Orchestrates the Android component lifecycle, Compose UI, frame-geometry handling, and hardware coordination.
     - KalmanFilter.kt: Discrete Kalman Filter (Position/Velocity, white-noise-acceleration process model) for state estimation of the tracked subject. One instance per axis.
-    - UdpSender.kt: Encapsulates a DatagramSocket within a dedicated background thread to handle non-blocking network I/O.
+    - UdpSender.kt: Encapsulates a DatagramSocket for non-blocking network I/O -- one background thread serializes outbound error packets, a second daemon thread drains the firmware's replies and surfaces battery telemetry (`BatteryStatus`) via an `onBattery` callback.
     - LogManager.kt: Provides thread-safe recording of per-frame tracking state to the local file system in CSV format.
 
 ## Localization Algorithm
@@ -51,10 +51,26 @@ To compensate for motor latency and network delay, a 1D Kalman Filter (constant-
 Data transmission to the ESP32 tripod is handled via UDP.
 
 - Protocol: UDP over IPv4.
-- Payload Format: `"EX:[FLOAT],EY:[FLOAT],SEQ:[UINT]"` -- normalized error in `[-1, 1]` per axis, plus a monotonically increasing sequence number. This is intentionally decoupled from camera resolution, aspect ratio, and orientation: the firmware never needs to know the frame size.
+- Payload Format (app -> firmware): `"EX:[FLOAT],EY:[FLOAT],SEQ:[UINT]"` -- normalized error in `[-1, 1]` per axis, plus a monotonically increasing sequence number. This is intentionally decoupled from camera resolution, aspect ratio, and orientation: the firmware never needs to know the frame size.
 - Rate: Commands are dispatched immediately following successful frame analysis, typically at 30Hz.
 - Sequencing: `SEQ` lets the firmware detect and drop out-of-order/duplicate packets, and lets you measure packet loss from the gaps in `Seq` in the logged CSV.
 - Firmware control: The ESP32 applies PID speed control in raw microseconds -- `pulse_us = NEUTRAL_US +/- clamp(KP*err + KI*integral, -MAX_SPEED_OFFSET_US, MAX_SPEED_OFFSET_US)` per axis (KD = 0 by design) -- so the commanded rotation speed scales with how far off-center the subject is, for continuous-rotation servos. The gains are derived from an integrator-plant model (loop delay sets the gain ceiling); see the header comment in `firmware/camx_tripod/camx_tripod.ino` and "Tuning the PID" in `firmware/README.md`.
+
+### Reverse channel: battery telemetry (firmware -> app)
+
+The firmware replies on the **same UDP flow** -- back to the app's source IP/port, which the app reads on the very socket it sends from, so no extra listening port is needed. Roughly every 2s, once at least one error packet has arrived:
+
+- Payload Format: `"BATT:[INT 0-100],MV:[INT],MA:[INT],WH:[FLOAT]"` -- state of charge %, pack terminal millivolts, pack milliamps (positive = discharging), watt-hours remaining.
+- `UdpSender` parses this on its receive thread into a `BatteryStatus` and hands it to `MainActivity` via `onBattery`; the camera overlay renders `BatteryIndicator` (fill glyph + % + voltage, colour-coded by charge). With no INA219 on the tripod, no packet is ever sent and the indicator stays hidden.
+
+## Battery Monitoring
+
+An INA219 high-side sensor sits **before** the 5V regulator, so it measures the raw 2S Li-ion pack (2x 3.7V nominal, 2600mAh / 9.62Wh): terminal voltage and the total current the whole rig draws. The firmware fuel gauge (`camx_tripod.ino`) blends two estimates:
+
+1. **Coulomb counting** -- integrate current out of the running charge estimate (seeded at boot from the pack's open-circuit voltage). Accurate short-term, drifts over hours.
+2. **Open-circuit voltage** -- `OCV ~= V_terminal + I_discharge * R_internal`, mapped through a per-cell Li-ion resting-voltage curve. Absolute, but noisy under load and flat mid-charge.
+
+Fusion is asymmetric: near rest the coulomb counter is pulled toward the voltage estimate; under load the voltage estimate can only pull the counter *down* (so a near-empty pack can't hide behind a stale count, but a servo-surge sag can't make the gauge jump). Outputs: SoC %, Wh remaining, and the onboard RGB LED colour (green > 50%, amber 20-50%, red < 20%, blinking < 10%). Tuning constants (`BATT_CAPACITY_MAH`, `BATT_IR_OHMS`, `INA_CURRENT_SIGN`, the OCV table) and the wiring diagram are in `firmware/README.md` ("Battery monitoring").
 
 ## CSV Logging Schema
 
@@ -90,3 +106,4 @@ CamX is a motorized camera that can autonomously detect, lock onto, and record p
 - MediaPipe Tasks Vision (v0.10.14)
 - Android Jetpack Compose (Material 3)
 - Kotlin Coroutines for asynchronous processing
+- Firmware: Adafruit INA219 + Adafruit BusIO (battery monitoring), ESP32Servo
