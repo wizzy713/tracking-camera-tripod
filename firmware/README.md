@@ -12,23 +12,40 @@ This folder contains the ESP32 firmware for the automated tracking tripod hardwa
   dropped connection or closed app can't leave a continuous-rotation servo spinning forever.
 - Divergence guard: stops the motors if the tracking error stays pinned at the frame edge
   (usually a wrong `PAN_DIR`/`TILT_DIR` sign) instead of spinning at full speed.
-- Onboard LED lit solid green at boot as a power/alive indicator (RGB LED on GPIO8 on the
-  ESP32-C6 DevKit).
+- Battery monitoring via an INA219 on the high side of the 2S Li-ion pack (before the
+  regulator). A blended coulomb-count + open-circuit-voltage fuel gauge produces a
+  state-of-charge percentage, reported back to the app as a UDP reply. See
+  "Battery monitoring" below.
+- Onboard LED: solid green at boot as a power/alive indicator, then it tracks battery
+  charge once the gauge is running (green > 50%, amber 20-50%, red < 20%, blinking red
+  < 10%). RGB LED on GPIO8 on the ESP32-C6 DevKit.
 
 ## Hardware Requirements
 - ESP32-C6 Microcontroller (e.g. ESP32-C6-DevKitC-1 / DevKitM-1, WiFi 6)
 - 2x Continuous-rotation ("360-degree") Servo Motors (Pan and Tilt) -- standard positional
   (0-180-degree) servos are NOT compatible with the current control scheme, since they can
   only move to and hold an angle rather than spin at a commanded speed.
-- External 5V/3A Power Supply (Do not power servos from ESP32 pins)
-- **Common ground is required**: tie the external supply's GND, each servo's GND wire, and
+- Power: a 2S Li-ion pack (2x 3.7V nominal, 2600mAh / 9.62Wh) into a 5V/3A regulator that
+  feeds the servos and the ESP32. Do not power servos from ESP32 pins.
+- **Common ground is required**: tie the regulator's GND, each servo's GND wire, and
   the ESP32's GND pin together. Without a shared ground, the PWM signal has no valid
   reference against the servo's own power rail and the servo will not respond correctly.
+- INA219 current/voltage sensor (I2C breakout, e.g. Adafruit #904 or a clone) for battery
+  monitoring, wired on the **high side of the pack, before the regulator**.
 
 ## Wiring Diagram (Default)
 - **Pan Servo (X-Axis)**: Signal to GPIO 2
 - **Tilt Servo (Y-Axis)**: Signal to GPIO 3
 - **GND**: Connect ESP32 Ground and Servo Ground together.
+- **INA219**: `VCC` -> ESP32 `3V3`, `GND` -> common ground, `SDA` -> GPIO 6, `SCL` -> GPIO 7
+  (default I2C address `0x40`). Power path through the shunt:
+  ```
+  pack + --> [IN+] shunt [IN-] --> regulator IN (Vin)
+  pack - --> common ground
+  ```
+  So `IN+` is the battery-positive terminal and `IN-` goes to the regulator. If the app
+  shows a negative current while the rig is clearly running, the shunt is reversed --
+  swap `IN+`/`IN-` or set `INA_CURRENT_SIGN = -1`.
 
 On the ESP32-C6, avoid these pins for servo signal wiring:
 - GPIO4, 5, 8, 9, 15 — strapping pins, sampled at boot/reset
@@ -43,9 +60,10 @@ boards vary in which pins are actually broken out).
 1. Install the [Arduino IDE](https://www.arduino.cc/en/software).
 2. Install the **esp32 by Espressif Systems** board package (Boards Manager), version >= 3.0, and select an ESP32-C6 board under Tools > Board.
 3. Install the **ESP32Servo** library (>= 3.0) via Library Manager — older versions predate the core 3.x LEDC API and won't compile for the C6.
-4. Open `camx_tripod.ino` in this folder.
-5. Update `ssid` and `password` with your WiFi credentials.
-6. Click **Upload**.
+4. Install the **Adafruit INA219** library via Library Manager (it will offer to pull in its **Adafruit BusIO** dependency — accept).
+5. Open `camx_tripod.ino` in this folder.
+6. Update `ssid` and `password` with your WiFi credentials.
+7. Click **Upload**.
 
 ## Protocol
 The Android app sends UDP packets to port 4210 in the format: `EX:value,EY:value,SEQ:value`
@@ -58,6 +76,54 @@ The firmware applies PID speed control in raw microseconds:
 `pulse_us = NEUTRAL_US +/- clamp(KP*error + KI*integral, -MAX_SPEED_OFFSET_US, MAX_SPEED_OFFSET_US)`
 per axis, so rotation speed scales with how far off-center the subject is. When `|error|`
 is within `DEADZONE`, the firmware writes `NEUTRAL_US` (stop) instead of a speed offset.
+
+### Battery telemetry (firmware -> app)
+
+Roughly every 2s, and only after it has received at least one `EX/EY` packet, the firmware
+replies **on the same UDP flow** (back to the app's source address/port) with:
+
+```
+BATT:<percent 0-100>,MV:<pack millivolts>,MA:<pack milliamps, + = discharge>,WH:<Wh remaining>
+```
+
+e.g. `BATT:78,MV:7810,MA:640,WH:7.50`. The app reads this on the socket it sends from, so
+no extra listening port is needed. Absent an INA219, the firmware just never sends these
+and the app's battery indicator stays hidden.
+
+## Battery monitoring
+
+The INA219 sits before the regulator, so it reads the raw 2S pack: bus voltage
+(~6.0-8.4V) and total current (regulator + servos + ESP32). The fuel gauge in
+`camx_tripod.ino` blends two estimates every `BATT_SAMPLE_INTERVAL_MS`:
+
+1. **Coulomb counting** -- integrate current out of `battChargeMah` (starts from the
+   boot open-circuit voltage). Precise short-term; drifts over hours.
+2. **Voltage / OCV** -- `OCV ~= V_terminal + I_discharge * BATT_IR_OHMS`, run through a
+   per-cell Li-ion resting-voltage curve (`cellOcvToSoC`, evaluated at `OCV / BATT_CELLS`).
+   Absolute but noisy under load and flat through the mid-charge plateau.
+
+Fusion: near rest (`|I| < BATT_REST_CURRENT_MA`) the terminal voltage is ~OCV, so the
+counter is pulled toward the voltage estimate (converges in ~30s). Under load the voltage
+estimate can only ever drag the counter *down* -- so a nearly-flat pack can't hide behind
+a stale count, but a servo-surge voltage sag can't make the gauge jump either.
+
+Constants to check for your pack/wiring (top of `camx_tripod.ino`):
+
+| Constant | Meaning | If it's wrong |
+|---|---|---|
+| `BATT_CAPACITY_MAH` / `BATT_ENERGY_WH` | pack rating (2600 mAh / 9.62 Wh) | % scales wrong |
+| `BATT_CELLS` | cells in series (2) | OCV curve reads the wrong cell voltage |
+| `BATT_IR_OHMS` | whole-pack internal resistance (~0.15 Ohm est.) | gauge drifts up/down under load |
+| `INA_CURRENT_SIGN` | shunt orientation (+1) | current/telemetry sign flipped, gauge counts backwards |
+| `INA_SDA_PIN` / `INA_SCL_PIN` | I2C pins (GPIO 6 / 7) | `INA219 NOT found` at boot |
+
+`cellOcvToSoC` is a generic 18650 curve; for a thesis-grade number, discharge your actual
+pack at a constant current, log `MV` from the telemetry, and refit the table. Send `?` over
+Serial (115200) at any time to print live `%`, voltage, current, Wh and mAh.
+
+Note: the default INA219 calibration tops out near 3.2A. Servo-stall spikes above that read
+clipped -- they're too brief to matter to the coulomb count, but don't rely on `MA` for
+peak-current measurements.
 
 ## Tuning the PID
 
