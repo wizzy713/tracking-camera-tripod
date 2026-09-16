@@ -111,20 +111,26 @@ const int TILT_NEUTRAL_US = 1500;
 // The defaults below sit a bit above the PM-50 point (w_c ~= 5-6 rad/s): the
 // L ~= 0.15 s estimate is deliberately pessimistic (it double-counts delay the
 // app-side Kalman look-ahead already cancels), so the conservative gains felt
-// sluggish on the bench. KP/KI/KD/MAX_SPEED_OFFSET_US are RUNTIME-TUNABLE over
-// Serial -- send "KP120", "KI70", "KD0", "MS160" (see handleCalibrationInput)
-// to dial in responsiveness without reflashing, then copy the values you like
-// back here. Raise KP until the camera just starts to overshoot/hunt, then
-// back off ~30%. If tilt lags pan (gravity), it needs the higher end.
+// sluggish on the bench -- bumped again (85->110 / 50->65, same KI/KP ratio)
+// for the same reason, still UNVERIFIED on hardware past the first bump.
+// KP/KI/KD/MAX_SPEED_OFFSET_US are RUNTIME-TUNABLE over Serial -- send
+// "KP120", "KI70", "KD0", "MS160" (see handleCalibrationInput) to dial in
+// responsiveness without reflashing, then copy the values you like back
+// here. Raise KP until the camera just starts to overshoot/hunt, then back
+// off ~30%. If tilt lags pan (gravity), it needs the higher end. The
+// SATURATION_* guard below catches a fully diverging loop (wrong sign, or
+// the servo can't keep up at all) but NOT gain-induced oscillation around a
+// correctly-centred target -- watch for hunting/buzzing on first power-up
+// and back KP off if you see it.
 const float DEADZONE = 0.03f;             // Normalized error for full stop. ~2.5 sigma of the app's
                                           // Kalman-filtered position jitter (~0.013 normalized).
-float KP = 85.0f;                         // Proportional gain: pulse offset (us) per unit of normalized error
-float KI = 50.0f;                         // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
+float KP = 110.0f;                        // Proportional gain: pulse offset (us) per unit of normalized error
+float KI = 65.0f;                         // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
 float KD = 0.0f;                          // Derivative gain: kept at 0 by design (see model above). Only raise, in
                                           // small steps, if overshoot/oscillation remains after KP and KI are set --
                                           // if it makes things jerkier that is noise amplification; back it off.
-float MAX_SPEED_OFFSET_US = 140.0f;       // Max offset from NEUTRAL (us) ~= 250 deg/s camera slew. The P term alone
-                                          // maxes at KP*1 = 85 us, so control stays linear across the whole frame
+float MAX_SPEED_OFFSET_US = 180.0f;       // Max offset from NEUTRAL (us) ~= 250 deg/s camera slew. The P term alone
+                                          // maxes at KP*1 = 110 us, so control stays linear across the whole frame
                                           // and this clamp only bounds integral windup + fast-subject transients.
 const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulated integral (unit-error-seconds): ~50 us
                                           // of bias authority at KI above, enough for neutral mistrim + tilt gravity.
