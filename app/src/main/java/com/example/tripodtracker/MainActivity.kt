@@ -575,7 +575,14 @@ fun CameraPreviewScreen(
                             kalmanFilterY,
                             lockedId,
                             lostFrameCount,
-                            frameCounter % 5 == 0,
+                            // Skip the (expensive: JPEG round-trip + inference) hand
+                            // landmark pass entirely once a target is locked -- its only
+                            // consumers (the skeleton overlay and the open-palm lock
+                            // gesture) are both gated on lockedId == null already, so
+                            // running it while locked only steals executor time from
+                            // the per-frame tracking pipeline and adds latency to the
+                            // servo correction.
+                            frameCounter % 5 == 0 && lockedId == null,
                             onTargetUpdate,
                             onLostFrameCountChanged = { lostFrameCount = it }
                         ) { update, result ->
@@ -907,8 +914,17 @@ private fun processImageProxy(
                     predictedY = frameHeight / 2f
                 }
 
+                // No front-camera mirroring here: CameraX's ImageAnalysis frame is the
+                // raw, unmirrored sensor image for BOTH lenses (only the on-screen
+                // PreviewView mirrors the front camera, as a display-only convention
+                // for the user watching themselves). So predictedX already encodes the
+                // subject's true physical position relative to the camera's boresight
+                // for either camera, and the servo needs that -- not the mirrored,
+                // "selfie view" coordinate. Flipping it here was inverting the pan
+                // correction on the front camera. (The bounding-box/hand overlays
+                // still mirror for isFrontCamera above -- that's a separate, correct
+                // concern: drawing on top of the mirrored preview the user sees.)
                 var errX = (predictedX - frameWidth / 2f) / (frameWidth / 2f)
-                if (isFrontCamera) errX = -errX // Mirror to match the mirrored preview / user's real-world left-right.
                 errX = errX.coerceIn(-1f, 1f)
                 val errY = ((predictedY - frameHeight / 2f) / (frameHeight / 2f)).coerceIn(-1f, 1f)
 
