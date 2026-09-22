@@ -5,7 +5,6 @@ import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Rect
-import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
@@ -27,8 +26,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -72,7 +69,7 @@ import kotlin.math.hypot
 // How far ahead the Kalman filter predicts, in seconds, to compensate for
 // motor + network latency. This is a placeholder -- measure real end-to-end
 // latency (LED-flash + high-speed-camera test) and replace this with that value.
-private const val PREDICTION_HORIZON_SECONDS = 0.1f
+private const val PREDICTION_HORIZON_SECONDS = 0.2f
 
 // How many consecutive frames a locked target may go unmatched before the lock
 // is released. During this window the system coasts on the Kalman prediction
@@ -112,12 +109,8 @@ class MainActivity : ComponentActivity() {
     private var currentScreen by mutableStateOf("camera")
     private var lockedId by mutableStateOf<Int?>(null)
     private var permissionsGranted by mutableStateOf(false)
-    private var packetSeq = 0L
+    private var packetSeq = (System.currentTimeMillis() % 1_000_000_000L)
     private var batteryStatus by mutableStateOf<BatteryStatus?>(null)
-    
-    // Add NSD state
-    lateinit var nsdHelper: NsdHelper
-    private var discoveredServices = mutableStateListOf<NsdServiceInfo>()
 
     data class DetectedObjectInfo(
         val boundingBox: Rect,
@@ -194,12 +187,6 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         cameraExecutor = Executors.newSingleThreadExecutor()
         logManager = LogManager(this)
-        
-        nsdHelper = NsdHelper(this) { serviceInfo ->
-            if (discoveredServices.none { it.serviceName == serviceInfo.serviceName }) {
-                discoveredServices.add(serviceInfo)
-            }
-        }
 
         // Battery telemetry from the tripod's INA219 fuel gauge (UDP reply).
         udpSender.onBattery = { status ->
@@ -275,7 +262,6 @@ class MainActivity : ComponentActivity() {
         if (currentScreen == "settings") {
             BackHandler { currentScreen = "camera" }
             ConnectionScreen(
-                discoveredDevices = discoveredServices,
                 currentIp = esp32Ip,
                 currentPort = udpPort,
                 isLogging = isLogging,
@@ -292,13 +278,6 @@ class MainActivity : ComponentActivity() {
                     udpSender.updateTarget(ip, port)
                     udpSender.send(msg)
                     Toast.makeText(this, "Test packet sent to $ip", Toast.LENGTH_SHORT).show()
-                },
-                onDiscoveryStart = {
-                    discoveredServices.clear()
-                    nsdHelper.startDiscovery()
-                },
-                onDiscoveryStop = {
-                    nsdHelper.stopDiscovery()
                 }
             )
         } else {
@@ -525,6 +504,8 @@ fun CameraPreviewScreen(
                 IconButton(onClick = {
                     cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
                     onUnlock()
+                    kalmanFilterX.reset()
+                    kalmanFilterY.reset()
                 }) {
                     Icon(Icons.Filled.FlipCameraAndroid, contentDescription = "Flip", tint = Color.White)
                 }
@@ -727,22 +708,16 @@ fun BatteryIndicator(battery: BatteryStatus?, modifier: Modifier = Modifier) {
 
 @Composable
 fun ConnectionScreen(
-    discoveredDevices: List<NsdServiceInfo>,
     currentIp: String,
     currentPort: Int,
     isLogging: Boolean,
     onToggleLogging: (Boolean) -> Unit,
     onConnect: (String, Int) -> Unit,
-    onTest: (String, Int, String) -> Unit,
-    onDiscoveryStart: () -> Unit,
-    onDiscoveryStop: () -> Unit
+    onTest: (String, Int, String) -> Unit
 ) {
     var ip by remember { mutableStateOf(currentIp) }
     var port by remember { mutableStateOf(currentPort.toString()) }
     var testMessage by remember { mutableStateOf("PING") }
-
-    LaunchedEffect(Unit) { onDiscoveryStart() }
-    DisposableEffect(Unit) { onDispose { onDiscoveryStop() } }
 
     Column(
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp),
@@ -798,26 +773,6 @@ fun ConnectionScreen(
                 Text("CSV Logging", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                 Button(onClick = { onToggleLogging(!isLogging) }, colors = ButtonDefaults.buttonColors(containerColor = if (isLogging) Color.Red else MaterialTheme.colorScheme.primary)) {
                     Text(if (isLogging) "Stop Logging" else "Start Logging")
-                }
-            }
-        }
-        
-        Spacer(modifier = Modifier.height(32.dp))
-        Text("Discovered Devices", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
-        
-        LazyColumn(modifier = Modifier.fillMaxWidth()) {
-            items(discoveredDevices) { device ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
-                        ip = device.host?.hostAddress ?: ""
-                        port = device.port.toString()
-                    },
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(device.serviceName, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("${device.host?.hostAddress}:${device.port}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
-                    }
                 }
             }
         }
@@ -976,7 +931,11 @@ private fun processImageProxy(
                 // concern: drawing on top of the mirrored preview the user sees.)
                 var errX = (predictedX - frameWidth / 2f) / (frameWidth / 2f)
                 errX = errX.coerceIn(-1f, 1f)
-                val errY = ((predictedY - frameHeight / 2f) / (frameHeight / 2f)).coerceIn(-1f, 1f)
+                var errY = ((predictedY - frameHeight / 2f) / (frameHeight / 2f)).coerceIn(-1f, 1f)
+                
+                if (isFrontCamera) {
+                    errY = -errY
+                }
 
                 val update = MainActivity.TrackingUpdate(
                     errX = errX,

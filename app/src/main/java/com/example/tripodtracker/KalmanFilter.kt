@@ -128,6 +128,6 @@ class KalmanFilter(
         // Expected magnitude of subject acceleration, in px/s^2. This is a
         // starting point, not a measured value -- tune it from the logged
         // VelocityX/VelocityY columns (see LogManager) before citing results.
-        const val DEFAULT_ACCELERATION_NOISE = 80f
+        const val DEFAULT_ACCELERATION_NOISE = 150f
     }
 }
