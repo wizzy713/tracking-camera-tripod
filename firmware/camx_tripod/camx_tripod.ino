@@ -34,7 +34,6 @@
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <ESPmDNS.h>
 #include <ESP32Servo.h>
 #include <Wire.h>
 #include <Adafruit_INA219.h>
@@ -126,11 +125,11 @@ const int TILT_NEUTRAL_US = 1500;
 const float DEADZONE = 0.03f;             // Normalized error for full stop. ~2.5 sigma of the app's
                                           // Kalman-filtered position jitter (~0.013 normalized).
 float KP = 110.0f;                        // Proportional gain: pulse offset (us) per unit of normalized error
-float KI = 65.0f;                         // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
-float KD = 0.0f;                          // Derivative gain: kept at 0 by design (see model above). Only raise, in
+float KI = 50.0f;                         // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
+float KD = 5.0f;                          // Derivative gain: kept at 0 by design (see model above). Only raise, in
                                           // small steps, if overshoot/oscillation remains after KP and KI are set --
                                           // if it makes things jerkier that is noise amplification; back it off.
-float MAX_SPEED_OFFSET_US = 180.0f;       // Max offset from NEUTRAL (us) ~= 250 deg/s camera slew. The P term alone
+float MAX_SPEED_OFFSET_US = 220.0f;       // Max offset from NEUTRAL (us) ~= 250 deg/s camera slew. The P term alone
                                           // maxes at KP*1 = 110 us, so control stays linear across the whole frame
                                           // and this clamp only bounds integral windup + fast-subject transients.
 const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulated integral (unit-error-seconds): ~50 us
@@ -319,13 +318,6 @@ void setup() {
 
   // Start UDP
   udp.begin(udpPort);
-  // Start mDNS discovery for the Android app
-  if (!MDNS.begin("CamX-Tripod")) {
-    Serial.println("Error setting up MDNS responder!");
-  } else {
-    Serial.println("mDNS responder started");
-    MDNS.addService("arduino", "tcp", udpPort);
-  }
 
   Serial.printf("Listening on UDP port %d\n", udpPort);
 }
@@ -401,6 +393,7 @@ void loop() {
     panSaturatedSince = 0;
     tiltSaturatedSince = 0;
     controlDiverged = false;
+    haveSeq = false;
     Serial.println("Signal lost -- motors stopped");
   }
 
