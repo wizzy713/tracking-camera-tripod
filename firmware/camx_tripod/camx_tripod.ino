@@ -34,6 +34,7 @@
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <ESPmDNS.h>
 #include <ESP32Servo.h>
 #include <Wire.h>
 #include <Adafruit_INA219.h>
@@ -318,6 +319,14 @@ void setup() {
 
   // Start UDP
   udp.begin(udpPort);
+  // Start mDNS discovery for the Android app
+  if (!MDNS.begin("CamX-Tripod")) {
+    Serial.println("Error setting up MDNS responder!");
+  } else {
+    Serial.println("mDNS responder started");
+    MDNS.addService("arduino", "tcp", udpPort);
+  }
+
   Serial.printf("Listening on UDP port %d\n", udpPort);
 }
 
