@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Rect
+import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
@@ -26,6 +27,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -53,9 +56,9 @@ import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.objects.ObjectDetection
-import com.google.mlkit.vision.objects.ObjectDetector
-import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetector
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -111,6 +114,10 @@ class MainActivity : ComponentActivity() {
     private var permissionsGranted by mutableStateOf(false)
     private var packetSeq = 0L
     private var batteryStatus by mutableStateOf<BatteryStatus?>(null)
+    
+    // Add NSD state
+    lateinit var nsdHelper: NsdHelper
+    private var discoveredServices = mutableStateListOf<NsdServiceInfo>()
 
     data class DetectedObjectInfo(
         val boundingBox: Rect,
@@ -187,6 +194,12 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         cameraExecutor = Executors.newSingleThreadExecutor()
         logManager = LogManager(this)
+        
+        nsdHelper = NsdHelper(this) { serviceInfo ->
+            if (discoveredServices.none { it.serviceName == serviceInfo.serviceName }) {
+                discoveredServices.add(serviceInfo)
+            }
+        }
 
         // Battery telemetry from the tripod's INA219 fuel gauge (UDP reply).
         udpSender.onBattery = { status ->
@@ -262,6 +275,7 @@ class MainActivity : ComponentActivity() {
         if (currentScreen == "settings") {
             BackHandler { currentScreen = "camera" }
             ConnectionScreen(
+                discoveredDevices = discoveredServices,
                 currentIp = esp32Ip,
                 currentPort = udpPort,
                 isLogging = isLogging,
@@ -278,6 +292,13 @@ class MainActivity : ComponentActivity() {
                     udpSender.updateTarget(ip, port)
                     udpSender.send(msg)
                     Toast.makeText(this, "Test packet sent to $ip", Toast.LENGTH_SHORT).show()
+                },
+                onDiscoveryStart = {
+                    discoveredServices.clear()
+                    nsdHelper.startDiscovery()
+                },
+                onDiscoveryStop = {
+                    nsdHelper.stopDiscovery()
                 }
             )
         } else {
@@ -551,16 +572,17 @@ fun CameraPreviewScreen(
             val cameraProvider = cameraProviderFuture.get()
             val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
 
-            val options = ObjectDetectorOptions.Builder()
-                .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
-                .enableMultipleObjects()
+            val options = FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .enableTracking()
                 .build()
-            val objectDetector = ObjectDetection.getClient(options)
+            val objectDetector = FaceDetection.getClient(options)
 
             var frameCounter = 0
             var lostFrameCount = 0
             val imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .build()
                 .also {
                 it.setAnalyzer(executor) { imageProxy ->
@@ -705,16 +727,22 @@ fun BatteryIndicator(battery: BatteryStatus?, modifier: Modifier = Modifier) {
 
 @Composable
 fun ConnectionScreen(
+    discoveredDevices: List<NsdServiceInfo>,
     currentIp: String,
     currentPort: Int,
     isLogging: Boolean,
     onToggleLogging: (Boolean) -> Unit,
     onConnect: (String, Int) -> Unit,
-    onTest: (String, Int, String) -> Unit
+    onTest: (String, Int, String) -> Unit,
+    onDiscoveryStart: () -> Unit,
+    onDiscoveryStop: () -> Unit
 ) {
     var ip by remember { mutableStateOf(currentIp) }
     var port by remember { mutableStateOf(currentPort.toString()) }
     var testMessage by remember { mutableStateOf("PING") }
+
+    LaunchedEffect(Unit) { onDiscoveryStart() }
+    DisposableEffect(Unit) { onDispose { onDiscoveryStop() } }
 
     Column(
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp),
@@ -773,12 +801,32 @@ fun ConnectionScreen(
                 }
             }
         }
+        
+        Spacer(modifier = Modifier.height(32.dp))
+        Text("Discovered Devices", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
+        
+        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+            items(discoveredDevices) { device ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
+                        ip = device.host?.hostAddress ?: ""
+                        port = device.port.toString()
+                    },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(device.serviceName, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${device.host?.hostAddress}:${device.port}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
+                    }
+                }
+            }
+        }
     }
 }
 
 @OptIn(ExperimentalGetImage::class)
 private fun processImageProxy(
-    detector: ObjectDetector,
+    detector: FaceDetector,
     handLandmarker: HandLandmarker?,
     imageProxy: ImageProxy,
     isFrontCamera: Boolean,
@@ -837,14 +885,6 @@ private fun processImageProxy(
 
         detector.process(image)
             .addOnSuccessListener { detectedObjects ->
-                val objectInfos = detectedObjects.map {
-                    MainActivity.DetectedObjectInfo(
-                        it.boundingBox,
-                        it.trackingId,
-                        isLocked = it.trackingId == lockedId
-                    )
-                }
-
                 if (openPalmDetected && lockedId == null) {
                     val closest = detectedObjects.minByOrNull { obj ->
                         hypot(obj.boundingBox.centerX().toFloat() - palmX, obj.boundingBox.centerY().toFloat() - palmY)
@@ -863,6 +903,16 @@ private fun processImageProxy(
                 } else {
                     detectedObjects.maxByOrNull { it.boundingBox.width().toLong() * it.boundingBox.height().toLong() }
                 }
+
+                val objectInfos = targetObject?.let {
+                    listOf(
+                        MainActivity.DetectedObjectInfo(
+                            it.boundingBox,
+                            it.trackingId,
+                            isLocked = it.trackingId == lockedId
+                        )
+                    )
+                } ?: emptyList()
 
                 val newLostFrameCount = if (lockedId != null && targetObject == null) {
                     (lostFrameCount + 1).also { if (it > MAX_COAST_FRAMES) onSetLockedId(null) }
