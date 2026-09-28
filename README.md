@@ -9,8 +9,7 @@ CamX is a technical Android application designed to interface with motorized tri
 - Predictive Tracking: Implements a 1D Kalman Filter (one instance per axis) to estimate subject velocity and predict trajectory coordinates.
 - Resolution-Independent Localization: Transmits a normalized X/Y error in [-1, 1] to the hardware layer, decoupled from camera resolution and orientation.
 - Connectivity: Manual IP/port configuration to link with tripod hardware on the local Wi-Fi network.
-- Experiment Tab: Live-tunes the firmware's PID gains and the app's Kalman filter/prediction horizon against a running rig, and labels CSV logging sessions with test metadata -- see [TESTING.md](./TESTING.md) for suggested experiments.
-- Diagnostic Tools: Includes connection testing with custom payloads and telemetry logging in CSV format, including per-frame tracking error (`ErrX`/`ErrY`).
+- Diagnostic Tools: Includes connection testing with custom payloads and telemetry logging in CSV format.
 - Battery Readout: The tripod's INA219 fuel gauge streams pack state of charge back over the same UDP link; the camera screen shows a live battery indicator (%, voltage, colour-coded).
 - Comprehensive Camera Control: Provides high-resolution photo capture, video recording with audio, and hardware flip capabilities.
 
@@ -27,7 +26,7 @@ The localization process follows a multi-stage pipeline:
 ### 2. Communication Protocol
 - Hardware Link: UDP (User Datagram Protocol) is utilized for minimum latency transmission.
 - Payload Format: "EX:[FLOAT],EY:[FLOAT],SEQ:[UINT]" -- normalized error per axis plus a sequence number for loss/reorder detection.
-- Reverse Telemetry: The firmware replies on the same socket with "BATT:[%],MV:[mV],MA:[mA],WH:[Wh]" every ~2s for the on-screen battery indicator, and with "CFG:KP:...,KI:...,KD:...,MS:...,DZ:..." immediately after any PID-gain set/query from the Experiment tab.
+- Reverse Telemetry: The firmware replies on the same socket with "BATT:[%],MV:[mV],MA:[mA],WH:[Wh]" every ~2s for the on-screen battery indicator.
 - Configuration: The IP address and port of the ESP32 are entered manually in the connection settings.
 
 ## Project Structure

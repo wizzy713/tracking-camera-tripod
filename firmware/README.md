@@ -77,22 +77,6 @@ The firmware applies PID speed control in raw microseconds:
 per axis, so rotation speed scales with how far off-center the subject is. When `|error|`
 is within `DEADZONE`, the firmware writes `NEUTRAL_US` (stop) instead of a speed offset.
 
-### CFG protocol: live PID tuning from the app's Experiment tab (app <-> firmware)
-
-Same `KEY:value` convention as `EX`/`EY` and `BATT`, on the same UDP flow:
-
-- **Set**, app -> firmware: `CFG:KP:110.00,KI:50.00,KD:5.00,MS:220.0,DZ:0.030` -- all five
-  gains together (the app always sends its full current set). Applying a set also zeroes
-  `panIntegral`/`tiltIntegral`, same as the Serial `KI<v>` handler.
-- **Query**, app -> firmware: `CFG?` -- returns the current gains without changing anything
-  (used by the Experiment tab's "Sync from Tripod").
-- **Reply**, firmware -> app: same format as the set message, sent immediately (not
-  rate-limited like `BATT`) after handling either a set or a query, so the app's sliders
-  always reflect what the firmware actually has -- including gains changed over Serial.
-
-Gains set this way are RAM-only, same as the Serial path below -- they reset to the
-defaults in `camx_tripod.ino` on reboot.
-
 ### Battery telemetry (firmware -> app)
 
 Roughly every 2s, and only after it has received at least one `EX/EY` packet, the firmware

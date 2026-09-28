@@ -123,18 +123,8 @@ class MainActivity : ComponentActivity() {
     private var currentScreen by mutableStateOf("camera")
     private var lockedId by mutableStateOf<Int?>(null)
     private var permissionsGranted by mutableStateOf(false)
-    private var packetSeq = (System.currentTimeMillis() % 1_000_000_000L)
+    private var packetSeq = 0L
     private var batteryStatus by mutableStateOf<BatteryStatus?>(null)
-
-    // Experiment tab state: live PID gains as last reported by the tripod (null
-    // until the first CFG reply arrives), which subject-finding pipeline is
-    // active, the Kalman prediction horizon, and free-text metadata for the CSV
-    // session header -- see buildSessionMetadata() and ExperimentScreen.kt.
-    private var tripodConfig by mutableStateOf<TripodConfig?>(null)
-    private var detectionMode by mutableStateOf(DetectionMode.FACE)
-    private var predictionHorizonSeconds by mutableStateOf(DEFAULT_PREDICTION_HORIZON_SECONDS)
-    private var testName by mutableStateOf("")
-    private var testNotes by mutableStateOf("")
 
     data class DetectedObjectInfo(
         val boundingBox: Rect,
@@ -218,12 +208,6 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { batteryStatus = status }
         }
 
-        // PID config replies from the tripod (Experiment tab "Sync"/"Apply").
-        udpSender.onConfig = { config ->
-            Log.d("CamX", "tripod config: $config")
-            runOnUiThread { tripodConfig = config }
-        }
-
         thread { setupHandLandmarker() }
 
         permissionsGranted = allPermissionsGranted()
@@ -281,6 +265,66 @@ class MainActivity : ComponentActivity() {
                         millivolts = (6000 + pct * 24).coerceIn(6000, 8400),
                         milliamps = (220..880).random(),
                         whRemaining = pct / 100f * 9.62f
+                    )
+                    delay(3000)
+                    pct -= (0..1).random()
+                    if (pct < 12) pct = (86..97).random() // loop for a continuous demo
+                }
+            }
+        }
+
+        if (currentScreen == "settings") {
+            BackHandler { currentScreen = "camera" }
+            ConnectionScreen(
+                currentIp = esp32Ip,
+                currentPort = udpPort,
+                isLogging = isLogging,
+                onToggleLogging = {
+                    isLogging = it
+                    if (!it) logManager.saveLog()
+                },
+                onConnect = { ip, port ->
+                    esp32Ip = ip
+                    udpPort = port
+                    currentScreen = "camera"
+                },
+                onTest = { ip, port, msg ->
+                    udpSender.updateTarget(ip, port)
+                    udpSender.send(msg)
+                    Toast.makeText(this, "Test packet sent to $ip", Toast.LENGTH_SHORT).show()
+                }
+            )
+        } else {
+            CameraPreviewScreen(
+                cameraExecutor,
+                kalmanFilterX,
+                kalmanFilterY,
+                handLandmarker,
+                isLogging = isLogging,
+                onToggleLogging = {
+                    isLogging = it
+                    if (!it) logManager.saveLog()
+                },
+                onOpenSettings = { currentScreen = "settings" },
+                lockedId = lockedId,
+                battery = batteryStatus,
+                onUnlock = { lockedId = null },
+                onTargetUpdate = { id -> lockedId = id }
+            ) { update ->
+                val seq = packetSeq++
+                udpSender.send(String.format(Locale.US, "EX:%.4f,EY:%.4f,SEQ:%d", update.errX, update.errY, seq))
+                if (isLogging) {
+                    logManager.log(
+                        frameTimestampNanos = update.frameTimestampNanos,
+                        seq = seq,
+                        detectionCount = update.detectionCount,
+                        rawX = update.rawX,
+                        rawY = update.rawY,
+                        filteredX = update.filteredX,
+                        filteredY = update.filteredY,
+                        velocityX = update.velocityX,
+                        velocityY = update.velocityY,
+                        dtSeconds = update.dtSeconds
                     )
                     delay(3000)
                     pct -= (0..1).random()
@@ -464,9 +508,6 @@ fun CameraPreviewScreen(
     onOpenExperiment: () -> Unit,
     lockedId: Int?,
     battery: BatteryStatus?,
-    detectionMode: DetectionMode,
-    onDetectionModeChange: (DetectionMode) -> Unit,
-    predictionHorizonSeconds: Float,
     onUnlock: () -> Unit,
     onTargetUpdate: (Int?) -> Unit,
     onTargetDetected: (MainActivity.TrackingUpdate) -> Unit
@@ -755,6 +796,84 @@ fun CameraPreviewScreen(
                 faceDetector.close()
                 objDetector.close()
             }
+        }
+    }
+}
+
+/**
+ * Compact battery readout for the camera overlay: a fill-level glyph plus the
+ * percentage and pack voltage from the tripod's INA219 fuel gauge. Colour tracks
+ * charge (green > 50%, amber 20-50%, red < 20%). Until the first telemetry
+ * packet arrives it shows a dim "no data" placeholder, so the feature is
+ * visibly present even before the tripod is connected.
+ */
+@Composable
+fun BatteryIndicator(battery: BatteryStatus?, modifier: Modifier = Modifier) {
+    val levelColor = when {
+        battery == null -> Color.White.copy(alpha = 0.5f)
+        battery.milliamps < -20 -> Color(0xFF4CAF50) // negative current => charging
+        battery.percent > 50 -> Color(0xFF4CAF50)
+        battery.percent > 20 -> Color(0xFFFFB300)
+        else -> Color(0xFFE53935)
+    }
+
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color.Black.copy(alpha = 0.45f))
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Canvas(modifier = Modifier.size(width = 26.dp, height = 13.dp)) {
+            val stroke = 1.5.dp.toPx()
+            val nubW = 2.dp.toPx()
+            val bodyW = size.width - nubW
+            val corner = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+            val outline = if (battery == null) Color.White.copy(alpha = 0.5f) else Color.White
+
+            drawRoundRect(
+                color = outline,
+                topLeft = Offset(0f, 0f),
+                size = Size(bodyW, size.height),
+                cornerRadius = corner,
+                style = Stroke(width = stroke)
+            )
+            drawRoundRect(
+                color = outline,
+                topLeft = Offset(bodyW, size.height * 0.28f),
+                size = Size(nubW, size.height * 0.44f),
+                cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx())
+            )
+            if (battery != null) {
+                val pad = stroke + 1.dp.toPx()
+                val trackW = bodyW - 2 * pad
+                val fillW = (trackW * (battery.percent / 100f)).coerceIn(0f, trackW)
+                drawRoundRect(
+                    color = levelColor,
+                    topLeft = Offset(pad, pad),
+                    size = Size(fillW, size.height - 2 * pad),
+                    cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx())
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(6.dp))
+
+        Column {
+            Text(
+                text = if (battery != null) "${battery.percent}%" else "-- %",
+                color = if (battery != null) Color.White else Color.White.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.labelLarge
+            )
+            Text(
+                text = if (battery != null) {
+                    String.format(Locale.US, "%.2f V", battery.millivolts / 1000f)
+                } else {
+                    "no tripod data"
+                },
+                color = Color.White.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.labelSmall
+            )
         }
     }
 }

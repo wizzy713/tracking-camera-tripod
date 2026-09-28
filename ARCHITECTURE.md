@@ -61,25 +61,6 @@ Data transmission to the ESP32 tripod is handled via UDP.
 - Sequencing: `SEQ` lets the firmware detect and drop out-of-order/duplicate packets, and lets you measure packet loss from the gaps in `Seq` in the logged CSV.
 - Firmware control: The ESP32 applies PID speed control in raw microseconds -- `pulse_us = NEUTRAL_US +/- clamp(KP*err + KI*integral, -MAX_SPEED_OFFSET_US, MAX_SPEED_OFFSET_US)` per axis (KD = 0 by design) -- so the commanded rotation speed scales with how far off-center the subject is, for continuous-rotation servos. The gains are derived from an integrator-plant model (loop delay sets the gain ceiling); see the header comment in `firmware/camx_tripod/camx_tripod.ino` and "Tuning the PID" in `firmware/README.md`.
 
-### Live Tuning (Experiment tab): `CFG` protocol
-
-The Experiment tab (Kotlin: `ExperimentScreen.kt`) tunes both controllers live against a
-running rig:
-
-- **PID gains** (`KP`/`KI`/`KD`/`MAX_SPEED_OFFSET_US`/`DEADZONE`) live on the firmware, so
-  they're set over the same UDP flow as the `EX`/`EY` packets: `CFG:KP:<v>,KI:<v>,KD:<v>,MS:<v>,DZ:<v>`
-  to set all five at once, or `CFG?` to query without changing anything. The firmware
-  always replies on the same flow with its full current gain set in the same format, which
-  the app parses into `UdpSender.onConfig` / `MainActivity.tripodConfig` and uses to re-seed
-  the Experiment tab's sliders. Gains are RAM-only on the firmware (reset to the `.ino`
-  defaults on reboot), same as the pre-existing Serial-tuning path. See "CFG protocol" in
-  `firmware/README.md` for the full spec.
-- **Kalman noise** (`measurementNoise`/`accelerationNoise`) and the **prediction horizon**
-  live entirely in the app, so the Experiment tab writes them straight into the running
-  `kalmanFilterX`/`kalmanFilterY` instances and `MainActivity.predictionHorizonSeconds` --
-  no network round-trip, no persistence (reset to the `DEFAULT_*` constants on app restart,
-  same as the IP/port settings noted under "Known Limitations").
-
 ### Reverse channel: battery telemetry (firmware -> app)
 
 The firmware replies on the **same UDP flow** -- back to the app's source IP/port, which the app reads on the very socket it sends from, so no extra listening port is needed. Roughly every 2s, once at least one error packet has arrived:

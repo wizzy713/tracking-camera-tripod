@@ -25,19 +25,6 @@ data class BatteryStatus(
 )
 
 /**
- * The tripod's live PID gains, as reported back over UDP in reply to a
- * `CFG:...` (set) or `CFG?` (query) packet -- see the Experiment tab and
- * "CFG protocol" in firmware/README.md.
- */
-data class TripodConfig(
-    val kp: Float,
-    val ki: Float,
-    val kd: Float,
-    val maxSpeedOffsetUs: Float,
-    val deadzone: Float
-)
-
-/**
  * Managed UDP link to the tripod. A single background thread serializes sends
  * (see [send]); a second daemon thread drains replies and surfaces battery
  * telemetry via [onBattery]. Both share one [DatagramSocket] so the firmware's
@@ -52,9 +39,6 @@ class UdpSender {
 
     /** Invoked (on the receiver thread) whenever a battery packet is parsed. */
     @Volatile var onBattery: ((BatteryStatus) -> Unit)? = null
-
-    /** Invoked (on the receiver thread) whenever a CFG reply is parsed. */
-    @Volatile var onConfig: ((TripodConfig) -> Unit)? = null
 
     private var targetIp: String = "10.179.76.141"
     private var targetPort: Int = 4210
@@ -71,18 +55,11 @@ class UdpSender {
                     socket.receive(packet)
                     val message = String(packet.data, 0, packet.length).trim()
                     Log.d("UdpSender", "rx from ${packet.address?.hostAddress}:${packet.port} -> \"$message\"")
-                    when {
-                        message.startsWith("BATT:") -> {
-                            val status = parseBattery(message)
-                            if (status != null) onBattery?.invoke(status)
-                            else Log.w("UdpSender", "rx BATT packet malformed: \"$message\"")
-                        }
-                        message.startsWith("CFG:") -> {
-                            val config = parseConfig(message)
-                            if (config != null) onConfig?.invoke(config)
-                            else Log.w("UdpSender", "rx CFG packet malformed: \"$message\"")
-                        }
-                        else -> Log.w("UdpSender", "rx packet not recognized")
+                    val status = parseBattery(message)
+                    if (status != null) {
+                        onBattery?.invoke(status)
+                    } else {
+                        Log.w("UdpSender", "rx packet not recognized as battery telemetry")
                     }
                 } catch (e: Exception) {
                     if (running) Log.w("UdpSender", "receive failed: ${e.message}")
@@ -137,25 +114,6 @@ class UdpSender {
             millivolts = fields["MV"]?.toIntOrNull() ?: 0,
             milliamps = fields["MA"]?.toIntOrNull() ?: 0,
             whRemaining = fields["WH"]?.toFloatOrNull() ?: 0f
-        )
-    }
-
-    /**
-     * Parses `CFG:KP:<v>,KI:<v>,KD:<v>,MS:<v>,DZ:<v>` (same `KEY:value` convention
-     * as [parseBattery]). Returns null unless all five gains are present.
-     */
-    private fun parseConfig(message: String): TripodConfig? {
-        if (!message.startsWith("CFG:")) return null
-        val fields = message.removePrefix("CFG:").split(",").mapNotNull { part ->
-            val kv = part.split(":", limit = 2)
-            if (kv.size == 2) kv[0].trim() to kv[1].trim() else null
-        }.toMap()
-        return TripodConfig(
-            kp = fields["KP"]?.toFloatOrNull() ?: return null,
-            ki = fields["KI"]?.toFloatOrNull() ?: return null,
-            kd = fields["KD"]?.toFloatOrNull() ?: return null,
-            maxSpeedOffsetUs = fields["MS"]?.toFloatOrNull() ?: return null,
-            deadzone = fields["DZ"]?.toFloatOrNull() ?: return null
         )
     }
 }

@@ -618,60 +618,6 @@ void sendBatteryTelemetry() {
 }
 
 /**
- * Finds "<key>:" in payload and parses the float that follows, up to the next
- * ',' or end of string. Returns `fallback` (leaves the caller's value alone)
- * if the key isn't present, so a CFG packet can update any subset of gains.
- */
-float parseKV(const String &payload, const char *key, float fallback) {
-  String needle = String(key) + ":";
-  int idx = payload.indexOf(needle);
-  if (idx == -1) return fallback;
-  int start = idx + needle.length();
-  int end = payload.indexOf(',', start);
-  String valueStr = (end == -1) ? payload.substring(start) : payload.substring(start, end);
-  return valueStr.toFloat();
-}
-
-/**
- * Handles a "CFG:..." (set) or "CFG?" (query) packet from the app's Experiment
- * tab -- see "CFG protocol" in firmware/README.md. A set packet carries a ':'
- * after the "CFG" prefix (e.g. "CFG:KP:110.00,KI:50.00,..."); a bare query has
- * none. Either way, always replies with the full current gain set so the app
- * stays in sync even after a Serial-side change.
- */
-void handleConfigPacket(const String &payload) {
-  if (payload.indexOf(':') != -1) {
-    KP = parseKV(payload, "KP", KP);
-    KI = parseKV(payload, "KI", KI);
-    KD = parseKV(payload, "KD", KD);
-    MAX_SPEED_OFFSET_US = constrain(parseKV(payload, "MS", MAX_SPEED_OFFSET_US), 10.0f, 400.0f);
-    DEADZONE = constrain(parseKV(payload, "DZ", DEADZONE), 0.0f, 0.5f);
-    panIntegral = 0.0f;
-    tiltIntegral = 0.0f;
-    Serial.print("Config updated via UDP: ");
-    printControlValues();
-  }
-  sendConfigTelemetry();
-}
-
-/**
- * Replies with the current PID gains on the same UDP flow CFG packets arrive
- * on, mirroring sendBatteryTelemetry()'s appIP/appPort reuse -- but unlike
- * battery telemetry this is NOT rate-limited: every CFG/CFG? gets an
- * immediate reply so the Experiment tab's "Apply"/"Sync" feel instant.
- */
-void sendConfigTelemetry() {
-  if (!haveApp) return;
-  char msg[128];
-  int len = snprintf(msg, sizeof(msg), "CFG:KP:%.2f,KI:%.2f,KD:%.2f,MS:%.1f,DZ:%.3f",
-                     KP, KI, KD, MAX_SPEED_OFFSET_US, DEADZONE);
-  if (len <= 0) return;
-  udp.beginPacket(appIP, appPort);
-  udp.write((const uint8_t *) msg, len);
-  udp.endPacket();
-}
-
-/**
  * PID speed offset for one axis. Returns 0 (-> NEUTRAL, i.e. stop) whenever
  * the error is within DEADZONE, and resets that axis's integral term at the
  * same time so it doesn't creep once centered.
