@@ -146,21 +146,26 @@ KD  = 0        (an integrator needs no D, and it only amplifies vision jitter)
 The model with `Ks ~= 1.8 deg/s/us` (FS90R-class @ 5V, loaded), `half_FOV ~= 26deg` (pan) /
 `33deg` (tilt), `L ~= 0.15 s` gives `KP ~= 55`, `KI ~= 30`. That felt sluggish on the
 bench (the `L` estimate is pessimistic -- it double-counts delay the app-side Kalman
-look-ahead already removes), so the **shipped defaults are `KP = 85`, `KI = 50`,
-`MAX_SPEED_OFFSET_US = 140`**, roughly `w_c ~= 5-6 rad/s`.
+look-ahead already removes), so the **shipped defaults are `KP = 110`, `KI = 50`,
+`MAX_SPEED_OFFSET_US = 220`**, roughly `w_c ~= 5-6 rad/s`.
 
-### Live tuning over Serial
+### Live tuning over Serial (or the app's Experiment tab)
 
-`KP`, `KI`, `KD`, and `MAX_SPEED_OFFSET_US` apply immediately from the Serial Monitor
-(115200 baud), no reflash -- so tune on the running rig:
+`KP`, `KI`, `KD`, `MAX_SPEED_OFFSET_US`, and `DEADZONE` apply immediately from the Serial
+Monitor (115200 baud), no reflash -- so tune on the running rig:
 
 ```
 KP120     set KP = 120
 KI70      set KI = 70   (also zeroes the integrators)
 KD0       set KD
 MS160     set MAX_SPEED_OFFSET_US = 160
+DZ0.05    set DEADZONE = 0.05
 ?         print current values
 ```
+
+The same five gains are also live-tunable from the phone, over UDP, via the Experiment
+tab -- see "CFG protocol" above. Either path updates the same in-memory values, and either
+one's changes show up in the other (`?` over Serial, or "Sync from Tripod" in the app).
 
 Method: raise `KP` until the camera just starts to overshoot or hunt around the subject,
 then back off ~30%. Set `KI` to about `KP/1.5` and lower it if you see slow oscillation.

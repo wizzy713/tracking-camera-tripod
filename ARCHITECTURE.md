@@ -17,9 +17,14 @@ The project follows a modular structure to separate concerns between the UI, the
 The core tracking algorithm is based on the recursive Bayesian estimation of the subject's center-pixel coordinates.
 
 ### 1. Object Detection (Perception)
-Subject detection uses Google ML Kit's on-device Object Detection and Tracking API in `STREAM_MODE`. **This is a generic "prominent object" detector, not a person detector** -- ML Kit ships no person class, so the tripod can lock onto any sufficiently prominent object in frame, not specifically a person. `DetectedObjectInfo.label` reflects this (labelled `"Object"`, not `"Person"`). Detected objects are reported as rectangular bounding boxes in the *upright* (post-rotation) image coordinate frame. This runs at 30Hz (every frame) for maximum responsiveness.
+Subject detection runs one of two ML Kit pipelines, selectable per-session as `DetectionMode` (Experiment tab, or the camera-screen toggle icon; default `FACE`):
 
-A known follow-up (not yet implemented) is swapping this for MediaPipe's Object Detector with an EfficientDet-Lite COCO model filtered to the `person` class, or a Pose Landmarker, to actually constrain tracking to people.
+- **`FACE`** (default): Google ML Kit Face Detection (`FaceDetectorOptions`, `PERFORMANCE_MODE_FAST`, `enableTracking()`). Locks onto faces only.
+- **`OBJECT`**: Google ML Kit Object Detection and Tracking (`ObjectDetectorOptions`, `STREAM_MODE`, `enableMultipleObjects()`, no classification). **This is a generic "prominent object" detector, not a person detector** -- ML Kit ships no person class and no classification is enabled here, so the tripod can lock onto any sufficiently prominent object in frame, not specifically a person (or face). Useful for subjects a face detector can't see, e.g. the pendulum test in `TESTING.md`.
+
+Both pipelines are mapped to a common `DetectedObjectInfo(boundingBox, trackingId)` shape in `processImageProxy` (`MainActivity.kt`) immediately on detection, so every downstream step -- target selection, hand-lock distance, the Kalman filter, the servo command -- is written once and works identically regardless of which detector produced it. `DetectedObjectInfo.label` stays the default `"Object"` in both modes (ML Kit provides no person class, and Object mode's classification is intentionally left off since nothing consumes it). Detected objects are reported as rectangular bounding boxes in the *upright* (post-rotation) image coordinate frame. Detection runs at 30Hz (every frame) for maximum responsiveness.
+
+A known follow-up (not yet implemented) is swapping `OBJECT` mode for MediaPipe's Object Detector with an EfficientDet-Lite COCO model filtered to the `person` class, or a Pose Landmarker, to constrain tracking to people specifically while still not requiring a visible face.
 
 ### 2. Gesture Recognition (Locking)
 MediaPipe Hand Landmarker runs concurrently at 6Hz (every 5th frame) to identify hand keypoints, in `RunningMode.IMAGE`. This throttling ensures system stability and reduces thermal overhead on mobile hardware.
@@ -42,8 +47,8 @@ The same applies to Y. Errors are computed from the *predicted* (not raw) positi
 To compensate for motor latency and network delay, a 1D Kalman Filter (constant-velocity state, discrete white-noise-acceleration process model) is applied independently to **both** the X and Y coordinates -- earlier versions only filtered X, leaving tilt visibly jerkier than pan.
 - State Vector: `[Position, Velocity]`, one filter instance per axis.
 - Filter input timestamp is the frame's monotonic capture time (`ImageProxy.imageInfo.timestamp`), not wall-clock time, so `dt` reflects actual capture spacing rather than processing jitter.
-- Measurement noise `R` and process noise (`sigma_a`, acceleration std-dev) are tunable constructor parameters on `KalmanFilter` (see `DEFAULT_MEASUREMENT_NOISE` / `DEFAULT_ACCELERATION_NOISE`). The current defaults are reasoned estimates, not measured values -- see `LogManager`'s CSV output for tuning them against real data.
-- Output: `predicted = position + velocity * PREDICTION_HORIZON_SECONDS` (currently a hardcoded 100ms placeholder -- replace with a measured end-to-end latency once that experiment is run).
+- Measurement noise `R` and process noise (`sigma_a`, acceleration std-dev) are mutable `var` properties on `KalmanFilter` (see `DEFAULT_MEASUREMENT_NOISE` / `DEFAULT_ACCELERATION_NOISE` for their starting values), live-tunable from the Experiment tab against the running `kalmanFilterX`/`kalmanFilterY` instances -- no app restart needed. The shipped defaults are reasoned estimates, not measured values -- see `LogManager`'s CSV output (now including `ErrX`/`ErrY`, see below) for tuning them against real data.
+- Output: `predicted = position + velocity * predictionHorizonSeconds`. `predictionHorizonSeconds` starts at `DEFAULT_PREDICTION_HORIZON_SECONDS` (200ms, a placeholder) and is also live-tunable from the Experiment tab -- replace it with a measured end-to-end latency once that experiment (see `TESTING.md`) is run.
 - Target loss handling: if a locked target's tracking ID isn't matched for up to `MAX_COAST_FRAMES` (15) consecutive frames, the filter coasts on its own prediction rather than jumping to an arbitrary detected object; beyond that the lock is released.
 
 ## Hardware Communication Layer
@@ -74,11 +79,18 @@ Fusion is asymmetric: near rest the coulomb counter is pulled toward the voltage
 
 ## CSV Logging Schema
 
-When logging is enabled, one row per processed frame is recorded:
+When logging is started from the Experiment tab, the saved file begins with a `# key:
+value` comment block -- the test name/notes and every tunable in effect for that run
+(PID gains, Kalman noise, prediction horizon, detection mode; see
+`MainActivity.buildSessionMetadata()`), so each CSV is self-describing about which
+settings produced it. Logging can still be started from the Settings screen without this
+metadata (the block is simply omitted).
 
-`Timestamp, FrameTimestampNanos, Seq, DetectionCount, RawX, RawY, FilteredX, FilteredY, VelocityX, VelocityY, DtSeconds`
+Below that, one row per processed frame is recorded:
 
-`RawX`/`RawY` are `NaN` on frames with no fresh measurement (coasting). Because `VelocityX`/`VelocityY` are logged, a predicted position at *any* horizon can be reconstructed offline as `FilteredX + VelocityX * horizonSeconds` -- this is what a prediction-horizon sweep experiment should use, rather than re-running the app at each horizon.
+`Timestamp, FrameTimestampNanos, Seq, DetectionCount, RawX, RawY, FilteredX, FilteredY, VelocityX, VelocityY, DtSeconds, ErrX, ErrY`
+
+`RawX`/`RawY` are `NaN` on frames with no fresh measurement (coasting). Because `VelocityX`/`VelocityY` are logged, a predicted position at *any* horizon can be reconstructed offline as `FilteredX + VelocityX * horizonSeconds` -- this is what a prediction-horizon sweep experiment should use, rather than re-running the app at each horizon. `ErrX`/`ErrY` are the normalized tracking error in `[-1, 1]` (subject offset from frame centre, as a fraction of half-frame) -- the actual `EX`/`EY` values sent to the tripod that frame. This is the primary tracking-error signal for evaluating a test run (e.g. RMS error over a pendulum swing); see `TESTING.md`.
 
 ## Subject Discovery and Initialization
 
@@ -88,8 +100,8 @@ Subject discovery is handled manually via the connection settings. The user spec
 
 - **Generic object detector, not a person detector** (see above) -- highest-value fix for tracking correctness.
 - **Gesture recognition is a hand-rotation-sensitive heuristic**, not MediaPipe's built-in `GestureRecognizer` (`Open_Palm` category), and runs in `RunningMode.IMAGE` (blocking) rather than `RunningMode.LIVE_STREAM`.
-- **Settings (IP/port) are not persisted** across app restarts; no `ViewModel`/`DataStore` layer, so configuration and tracking state also don't survive a configuration change (e.g. rotation).
-- **No automated evaluation harness.** The CSV schema above supports it, but end-to-end latency, prediction-horizon sweep, ablation (raw vs. filtered vs. predicted RMSE), and packet-loss experiments still need to be run and reported by hand.
+- **Settings (IP/port, Experiment-tab gains) are not persisted** across app restarts; no `ViewModel`/`DataStore` layer, so configuration and tracking state also don't survive a configuration change (e.g. rotation). The Experiment tab re-syncs PID gains from the firmware's `CFG` reply on open, so a reconnect after an app restart still recovers the tripod's actual live values -- only the local Kalman/prediction-horizon tuning is lost.
+- **No automated evaluation harness.** The CSV schema above (now including `ErrX`/`ErrY`) and the Experiment tab's live tuning support one, but end-to-end latency, prediction-horizon sweep, ablation (raw vs. filtered vs. predicted RMSE), and packet-loss experiments still need to be run and reported by hand -- see `TESTING.md` for the suggested protocol.
 - **Camera-analysis resolution is not pinned** (no `ResolutionSelector` on `ImageAnalysis`); it varies by device. This no longer causes correctness bugs (the frame-geometry and normalized-protocol fixes above are resolution-agnostic), but it does mean absolute pixel jitter -- and therefore the tuned `KalmanFilter` noise constants -- may vary by device.
 
 ## Ethical Considerations
@@ -102,7 +114,7 @@ CamX is a motorized camera that can autonomously detect, lock onto, and record p
 ## Dependencies
 
 - Android Jetpack CameraX (v1.4.1)
-- Google ML Kit Object Detection
+- Google ML Kit Face Detection + Object Detection (`DetectionMode.FACE` / `.OBJECT`)
 - MediaPipe Tasks Vision (v0.10.14)
 - Android Jetpack Compose (Material 3)
 - Kotlin Coroutines for asynchronous processing

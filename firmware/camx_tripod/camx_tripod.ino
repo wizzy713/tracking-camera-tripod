@@ -111,20 +111,28 @@ const int TILT_NEUTRAL_US = 1500;
 // The defaults below sit a bit above the PM-50 point (w_c ~= 5-6 rad/s): the
 // L ~= 0.15 s estimate is deliberately pessimistic (it double-counts delay the
 // app-side Kalman look-ahead already cancels), so the conservative gains felt
-// sluggish on the bench. KP/KI/KD/MAX_SPEED_OFFSET_US are RUNTIME-TUNABLE over
-// Serial -- send "KP120", "KI70", "KD0", "MS160" (see handleCalibrationInput)
-// to dial in responsiveness without reflashing, then copy the values you like
-// back here. Raise KP until the camera just starts to overshoot/hunt, then
-// back off ~30%. If tilt lags pan (gravity), it needs the higher end.
-const float DEADZONE = 0.03f;             // Normalized error for full stop. ~2.5 sigma of the app's
+// sluggish on the bench -- bumped again (85->110 / 50->65, same KI/KP ratio)
+// for the same reason, still UNVERIFIED on hardware past the first bump.
+// KP/KI/KD/MAX_SPEED_OFFSET_US are RUNTIME-TUNABLE over Serial -- send
+// "KP120", "KI70", "KD0", "MS160" (see handleCalibrationInput) to dial in
+// responsiveness without reflashing, then copy the values you like back
+// here. Raise KP until the camera just starts to overshoot/hunt, then back
+// off ~30%. If tilt lags pan (gravity), it needs the higher end. The
+// SATURATION_* guard below catches a fully diverging loop (wrong sign, or
+// the servo can't keep up at all) but NOT gain-induced oscillation around a
+// correctly-centred target -- watch for hunting/buzzing on first power-up
+// and back KP off if you see it.
+float DEADZONE = 0.03f;                   // Normalized error for full stop. ~2.5 sigma of the app's
                                           // Kalman-filtered position jitter (~0.013 normalized).
-float KP = 85.0f;                         // Proportional gain: pulse offset (us) per unit of normalized error
+                                          // RUNTIME-TUNABLE like KP/KI/KD/MS -- see handleCalibrationInput
+                                          // (Serial "DZ<v>") and handleConfigPacket (UDP "CFG:...").
+float KP = 110.0f;                        // Proportional gain: pulse offset (us) per unit of normalized error
 float KI = 50.0f;                         // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
-float KD = 0.0f;                          // Derivative gain: kept at 0 by design (see model above). Only raise, in
+float KD = 5.0f;                          // Derivative gain: kept at 0 by design (see model above). Only raise, in
                                           // small steps, if overshoot/oscillation remains after KP and KI are set --
                                           // if it makes things jerkier that is noise amplification; back it off.
-float MAX_SPEED_OFFSET_US = 140.0f;       // Max offset from NEUTRAL (us) ~= 250 deg/s camera slew. The P term alone
-                                          // maxes at KP*1 = 85 us, so control stays linear across the whole frame
+float MAX_SPEED_OFFSET_US = 220.0f;       // Max offset from NEUTRAL (us) ~= 250 deg/s camera slew. The P term alone
+                                          // maxes at KP*1 = 110 us, so control stays linear across the whole frame
                                           // and this clamp only bounds integral windup + fast-subject transients.
 const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulated integral (unit-error-seconds): ~50 us
                                           // of bias authority at KI above, enough for neutral mistrim + tilt gravity.
@@ -312,6 +320,7 @@ void setup() {
 
   // Start UDP
   udp.begin(udpPort);
+
   Serial.printf("Listening on UDP port %d\n", udpPort);
 }
 
@@ -350,7 +359,9 @@ void loop() {
     int eyIndex = payload.indexOf(",EY:");
     int seqIndex = payload.indexOf(",SEQ:");
 
-    if (exIndex != -1 && eyIndex != -1) {
+    if (payload.startsWith("CFG")) {
+      handleConfigPacket(payload);
+    } else if (exIndex != -1 && eyIndex != -1) {
       float errX = payload.substring(exIndex + 3, eyIndex).toFloat();
       float errY;
 
@@ -386,6 +397,7 @@ void loop() {
     panSaturatedSince = 0;
     tiltSaturatedSince = 0;
     controlDiverged = false;
+    haveSeq = false;
     Serial.println("Signal lost -- motors stopped");
   }
 
@@ -405,7 +417,12 @@ void loop() {
  * Also accepts live PID tuning (applies immediately, survives until reboot):
  *   KP<v> KI<v> KD<v>   PID gains
  *   MS<v>              MAX_SPEED_OFFSET_US (clamped 10..400)
+ *   DZ<v>              DEADZONE (clamped 0..0.5)
  *   ?                  print current values
+ *
+ * The same five gains (KP/KI/KD/MS/DZ) are also live-tunable over UDP from the
+ * app's Experiment tab -- see handleConfigPacket() / sendConfigTelemetry() and
+ * the "CFG" protocol in firmware/README.md.
  */
 void handleCalibrationInput() {
   if (!Serial.available()) return;
@@ -426,6 +443,7 @@ void handleCalibrationInput() {
   if (cmd.startsWith("KI")) { KI = cmd.substring(2).toFloat(); panIntegral = tiltIntegral = 0.0f; Serial.printf("KI = %.2f (integrators reset)\n", KI); return; }
   if (cmd.startsWith("KD")) { KD = cmd.substring(2).toFloat(); Serial.printf("KD = %.2f\n", KD); return; }
   if (cmd.startsWith("MS")) { MAX_SPEED_OFFSET_US = constrain(cmd.substring(2).toFloat(), 10.0f, 400.0f); Serial.printf("MAX_SPEED_OFFSET_US = %.0f\n", MAX_SPEED_OFFSET_US); return; }
+  if (cmd.startsWith("DZ")) { DEADZONE = constrain(cmd.substring(2).toFloat(), 0.0f, 0.5f); Serial.printf("DEADZONE = %.3f\n", DEADZONE); return; }
 
   if (line.length() < 2) return;
   char axis = line.charAt(0);
