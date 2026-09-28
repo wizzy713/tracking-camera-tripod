@@ -53,6 +53,9 @@ import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetector
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.ObjectDetector
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
@@ -69,7 +72,18 @@ import kotlin.math.hypot
 // How far ahead the Kalman filter predicts, in seconds, to compensate for
 // motor + network latency. This is a placeholder -- measure real end-to-end
 // latency (LED-flash + high-speed-camera test) and replace this with that value.
-private const val PREDICTION_HORIZON_SECONDS = 0.1f
+// Live-tunable from the Experiment tab (MainActivity.predictionHorizonSeconds);
+// this is just the value it starts at.
+private const val DEFAULT_PREDICTION_HORIZON_SECONDS = 0.2f
+
+/**
+ * Which ML Kit pipeline is used to find the tracked subject. FACE (default) is
+ * the existing face-lock behavior. OBJECT restores ML Kit's generic "prominent
+ * object" detector (unlabeled, no classification) so a non-face subject -- e.g.
+ * a ball for the pendulum test in TESTING.md -- can be tracked too. Selectable
+ * from the Experiment tab or the camera-screen toggle icon.
+ */
+enum class DetectionMode { FACE, OBJECT }
 
 // How many consecutive frames a locked target may go unmatched before the lock
 // is released. During this window the system coasts on the Kalman prediction
@@ -312,9 +326,138 @@ class MainActivity : ComponentActivity() {
                         velocityY = update.velocityY,
                         dtSeconds = update.dtSeconds
                     )
+                    delay(3000)
+                    pct -= (0..1).random()
+                    if (pct < 12) pct = (86..97).random() // loop for a continuous demo
                 }
             }
         }
+
+        val onToggleLogging: (Boolean) -> Unit = {
+            isLogging = it
+            if (it) logManager.startSession(buildSessionMetadata()) else logManager.saveLog()
+        }
+
+        when (currentScreen) {
+            "settings" -> {
+                BackHandler { currentScreen = "camera" }
+                ConnectionScreen(
+                    currentIp = esp32Ip,
+                    currentPort = udpPort,
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    onConnect = { ip, port ->
+                        esp32Ip = ip
+                        udpPort = port
+                        currentScreen = "camera"
+                    },
+                    onTest = { ip, port, msg ->
+                        udpSender.updateTarget(ip, port)
+                        udpSender.send(msg)
+                        Toast.makeText(this, "Test packet sent to $ip", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+            "experiment" -> {
+                BackHandler { currentScreen = "camera" }
+                ExperimentScreen(
+                    tripodConfig = tripodConfig,
+                    onApplyPid = { config ->
+                        udpSender.send(
+                            String.format(
+                                Locale.US,
+                                "CFG:KP:%.2f,KI:%.2f,KD:%.2f,MS:%.1f,DZ:%.3f",
+                                config.kp, config.ki, config.kd, config.maxSpeedOffsetUs, config.deadzone
+                            )
+                        )
+                    },
+                    onSyncFromTripod = { udpSender.send("CFG?") },
+                    kalmanFilterX = kalmanFilterX,
+                    kalmanFilterY = kalmanFilterY,
+                    predictionHorizonSeconds = predictionHorizonSeconds,
+                    onPredictionHorizonChange = { predictionHorizonSeconds = it },
+                    detectionMode = detectionMode,
+                    onDetectionModeChange = { mode ->
+                        detectionMode = mode
+                        lockedId = null
+                        kalmanFilterX.reset()
+                        kalmanFilterY.reset()
+                    },
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    testName = testName,
+                    onTestNameChange = { testName = it },
+                    testNotes = testNotes,
+                    onTestNotesChange = { testNotes = it },
+                    onBack = { currentScreen = "camera" }
+                )
+            }
+            else -> {
+                CameraPreviewScreen(
+                    cameraExecutor,
+                    kalmanFilterX,
+                    kalmanFilterY,
+                    handLandmarker,
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    onOpenSettings = { currentScreen = "settings" },
+                    onOpenExperiment = { currentScreen = "experiment" },
+                    lockedId = lockedId,
+                    battery = batteryStatus,
+                    detectionMode = detectionMode,
+                    onDetectionModeChange = { mode ->
+                        detectionMode = mode
+                        lockedId = null
+                        kalmanFilterX.reset()
+                        kalmanFilterY.reset()
+                    },
+                    predictionHorizonSeconds = predictionHorizonSeconds,
+                    onUnlock = { lockedId = null },
+                    onTargetUpdate = { id -> lockedId = id }
+                ) { update ->
+                    val seq = packetSeq++
+                    udpSender.send(String.format(Locale.US, "EX:%.4f,EY:%.4f,SEQ:%d", update.errX, update.errY, seq))
+                    if (isLogging) {
+                        logManager.log(
+                            frameTimestampNanos = update.frameTimestampNanos,
+                            seq = seq,
+                            detectionCount = update.detectionCount,
+                            rawX = update.rawX,
+                            rawY = update.rawY,
+                            filteredX = update.filteredX,
+                            filteredY = update.filteredY,
+                            velocityX = update.velocityX,
+                            velocityY = update.velocityY,
+                            dtSeconds = update.dtSeconds,
+                            errX = update.errX,
+                            errY = update.errY
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Snapshot of every tunable in effect right now, written as a CSV comment
+     * header by LogManager.saveLog() so a saved log is self-describing about
+     * which gains produced it. Called when logging is toggled ON.
+     */
+    private fun buildSessionMetadata(): Map<String, String> {
+        val cfg = tripodConfig
+        return linkedMapOf(
+            "test_name" to testName.ifBlank { "(unnamed)" },
+            "test_notes" to testNotes,
+            "detection_mode" to detectionMode.name,
+            "prediction_horizon_s" to predictionHorizonSeconds.toString(),
+            "kalman_measurement_noise" to kalmanFilterX.measurementNoise.toString(),
+            "kalman_acceleration_noise" to kalmanFilterX.accelerationNoise.toString(),
+            "tripod_kp" to (cfg?.kp?.toString() ?: "unknown (not synced)"),
+            "tripod_ki" to (cfg?.ki?.toString() ?: "unknown (not synced)"),
+            "tripod_kd" to (cfg?.kd?.toString() ?: "unknown (not synced)"),
+            "tripod_max_speed_offset_us" to (cfg?.maxSpeedOffsetUs?.toString() ?: "unknown (not synced)"),
+            "tripod_deadzone" to (cfg?.deadzone?.toString() ?: "unknown (not synced)")
+        )
     }
 
     override fun onDestroy() {
@@ -362,6 +505,7 @@ fun CameraPreviewScreen(
     isLogging: Boolean,
     onToggleLogging: (Boolean) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenExperiment: () -> Unit,
     lockedId: Int?,
     battery: BatteryStatus?,
     onUnlock: () -> Unit,
@@ -456,8 +600,23 @@ fun CameraPreviewScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onOpenSettings) {
-                Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
+            Row {
+                IconButton(onClick = onOpenSettings) {
+                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
+                }
+                IconButton(onClick = onOpenExperiment) {
+                    Icon(Icons.Default.Tune, contentDescription = "Experiment", tint = Color.White)
+                }
+                IconButton(onClick = {
+                    val next = if (detectionMode == DetectionMode.FACE) DetectionMode.OBJECT else DetectionMode.FACE
+                    onDetectionModeChange(next)
+                }) {
+                    Icon(
+                        imageVector = if (detectionMode == DetectionMode.FACE) Icons.Default.Face else Icons.Default.Category,
+                        contentDescription = "Detection mode: ${detectionMode.name}",
+                        tint = Color.White
+                    )
+                }
             }
 
             Row {
@@ -504,6 +663,8 @@ fun CameraPreviewScreen(
                 IconButton(onClick = {
                     cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
                     onUnlock()
+                    kalmanFilterX.reset()
+                    kalmanFilterY.reset()
                 }) {
                     Icon(Icons.Filled.FlipCameraAndroid, contentDescription = "Flip", tint = Color.White)
                 }
@@ -551,31 +712,51 @@ fun CameraPreviewScreen(
             val cameraProvider = cameraProviderFuture.get()
             val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
 
-            val options = ObjectDetectorOptions.Builder()
+            val faceOptions = FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .enableTracking()
+                .build()
+            val faceDetector = FaceDetection.getClient(faceOptions)
+
+            // Generic "prominent object" detector (unlabeled -- no classification,
+            // same as ARCHITECTURE.md's original description) for DetectionMode.OBJECT,
+            // e.g. tracking a ball for the pendulum test in TESTING.md rather than a face.
+            val objectOptions = ObjectDetectorOptions.Builder()
                 .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
                 .enableMultipleObjects()
                 .build()
-            val objectDetector = ObjectDetection.getClient(options)
+            val objDetector = ObjectDetection.getClient(objectOptions)
 
             var frameCounter = 0
             var lostFrameCount = 0
             val imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .build()
                 .also {
                 it.setAnalyzer(executor) { imageProxy ->
                     if (isTrackingEnabled) {
                         frameCounter++
                         processImageProxy(
-                            objectDetector,
+                            faceDetector,
+                            objDetector,
+                            detectionMode,
                             landmarker,
                             imageProxy,
                             cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA,
                             kalmanFilterX,
                             kalmanFilterY,
+                            predictionHorizonSeconds,
                             lockedId,
                             lostFrameCount,
-                            frameCounter % 5 == 0,
+                            // Skip the (expensive: JPEG round-trip + inference) hand
+                            // landmark pass entirely once a target is locked -- its only
+                            // consumers (the skeleton overlay and the open-palm lock
+                            // gesture) are both gated on lockedId == null already, so
+                            // running it while locked only steals executor time from
+                            // the per-frame tracking pipeline and adds latency to the
+                            // servo correction.
+                            frameCounter % 5 == 0 && lockedId == null,
                             onTargetUpdate,
                             onLostFrameCountChanged = { lostFrameCount = it }
                         ) { update, result ->
@@ -612,8 +793,87 @@ fun CameraPreviewScreen(
             try {
                 awaitCancellation()
             } finally {
-                objectDetector.close()
+                faceDetector.close()
+                objDetector.close()
             }
+        }
+    }
+}
+
+/**
+ * Compact battery readout for the camera overlay: a fill-level glyph plus the
+ * percentage and pack voltage from the tripod's INA219 fuel gauge. Colour tracks
+ * charge (green > 50%, amber 20-50%, red < 20%). Until the first telemetry
+ * packet arrives it shows a dim "no data" placeholder, so the feature is
+ * visibly present even before the tripod is connected.
+ */
+@Composable
+fun BatteryIndicator(battery: BatteryStatus?, modifier: Modifier = Modifier) {
+    val levelColor = when {
+        battery == null -> Color.White.copy(alpha = 0.5f)
+        battery.milliamps < -20 -> Color(0xFF4CAF50) // negative current => charging
+        battery.percent > 50 -> Color(0xFF4CAF50)
+        battery.percent > 20 -> Color(0xFFFFB300)
+        else -> Color(0xFFE53935)
+    }
+
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color.Black.copy(alpha = 0.45f))
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Canvas(modifier = Modifier.size(width = 26.dp, height = 13.dp)) {
+            val stroke = 1.5.dp.toPx()
+            val nubW = 2.dp.toPx()
+            val bodyW = size.width - nubW
+            val corner = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+            val outline = if (battery == null) Color.White.copy(alpha = 0.5f) else Color.White
+
+            drawRoundRect(
+                color = outline,
+                topLeft = Offset(0f, 0f),
+                size = Size(bodyW, size.height),
+                cornerRadius = corner,
+                style = Stroke(width = stroke)
+            )
+            drawRoundRect(
+                color = outline,
+                topLeft = Offset(bodyW, size.height * 0.28f),
+                size = Size(nubW, size.height * 0.44f),
+                cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx())
+            )
+            if (battery != null) {
+                val pad = stroke + 1.dp.toPx()
+                val trackW = bodyW - 2 * pad
+                val fillW = (trackW * (battery.percent / 100f)).coerceIn(0f, trackW)
+                drawRoundRect(
+                    color = levelColor,
+                    topLeft = Offset(pad, pad),
+                    size = Size(fillW, size.height - 2 * pad),
+                    cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx())
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(6.dp))
+
+        Column {
+            Text(
+                text = if (battery != null) "${battery.percent}%" else "-- %",
+                color = if (battery != null) Color.White else Color.White.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.labelLarge
+            )
+            Text(
+                text = if (battery != null) {
+                    String.format(Locale.US, "%.2f V", battery.millivolts / 1000f)
+                } else {
+                    "no tripod data"
+                },
+                color = Color.White.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.labelSmall
+            )
         }
     }
 }
@@ -771,12 +1031,15 @@ fun ConnectionScreen(
 
 @OptIn(ExperimentalGetImage::class)
 private fun processImageProxy(
-    detector: ObjectDetector,
+    faceDetector: FaceDetector,
+    objectDetector: ObjectDetector,
+    mode: DetectionMode,
     handLandmarker: HandLandmarker?,
     imageProxy: ImageProxy,
     isFrontCamera: Boolean,
     kalmanFilterX: KalmanFilter,
     kalmanFilterY: KalmanFilter,
+    predictionHorizonSeconds: Float,
     lockedId: Int?,
     lostFrameCount: Int,
     shouldDetectHands: Boolean,
@@ -828,16 +1091,23 @@ private fun processImageProxy(
             }
         }
 
-        detector.process(image)
-            .addOnSuccessListener { detectedObjects ->
-                val objectInfos = detectedObjects.map {
-                    MainActivity.DetectedObjectInfo(
-                        it.boundingBox,
-                        it.trackingId,
-                        isLocked = it.trackingId == lockedId
-                    )
-                }
+        // Map either detector's result list to a common shape so all the selection
+        // logic below (largest-box, tracking-ID match, hand-lock distance) works
+        // unchanged regardless of which pipeline is active. If the source task
+        // failed, `t.result` throws here, which fails the mapped task the same way
+        // the old code silently skipped a failed frame (no onSuccess, but
+        // addOnCompleteListener below still closes imageProxy).
+        val detectionTask = when (mode) {
+            DetectionMode.FACE -> faceDetector.process(image).continueWith { t ->
+                t.result.map { MainActivity.DetectedObjectInfo(it.boundingBox, it.trackingId) }
+            }
+            DetectionMode.OBJECT -> objectDetector.process(image).continueWith { t ->
+                t.result.map { MainActivity.DetectedObjectInfo(it.boundingBox, it.trackingId) }
+            }
+        }
 
+        detectionTask
+            .addOnSuccessListener { detectedObjects ->
                 if (openPalmDetected && lockedId == null) {
                     val closest = detectedObjects.minByOrNull { obj ->
                         hypot(obj.boundingBox.centerX().toFloat() - palmX, obj.boundingBox.centerY().toFloat() - palmY)
@@ -856,6 +1126,16 @@ private fun processImageProxy(
                 } else {
                     detectedObjects.maxByOrNull { it.boundingBox.width().toLong() * it.boundingBox.height().toLong() }
                 }
+
+                val objectInfos = targetObject?.let {
+                    listOf(
+                        MainActivity.DetectedObjectInfo(
+                            it.boundingBox,
+                            it.trackingId,
+                            isLocked = it.trackingId == lockedId
+                        )
+                    )
+                } ?: emptyList()
 
                 val newLostFrameCount = if (lockedId != null && targetObject == null) {
                     (lostFrameCount + 1).also { if (it > MAX_COAST_FRAMES) onSetLockedId(null) }
@@ -886,15 +1166,15 @@ private fun processImageProxy(
                     rawY = targetObject.boundingBox.exactCenterY()
                     filteredX = kalmanFilterX.update(rawX, imageProxy.imageInfo.timestamp)
                     filteredY = kalmanFilterY.update(rawY, imageProxy.imageInfo.timestamp)
-                    predictedX = kalmanFilterX.predictFuture(PREDICTION_HORIZON_SECONDS)
-                    predictedY = kalmanFilterY.predictFuture(PREDICTION_HORIZON_SECONDS)
+                    predictedX = kalmanFilterX.predictFuture(predictionHorizonSeconds)
+                    predictedY = kalmanFilterY.predictFuture(predictionHorizonSeconds)
                 } else if (coasting) {
                     rawX = Float.NaN
                     rawY = Float.NaN
                     filteredX = if (kalmanFilterX.hasEstimate) kalmanFilterX.position else frameWidth / 2f
                     filteredY = if (kalmanFilterY.hasEstimate) kalmanFilterY.position else frameHeight / 2f
-                    predictedX = kalmanFilterX.predictFuture(PREDICTION_HORIZON_SECONDS)
-                    predictedY = kalmanFilterY.predictFuture(PREDICTION_HORIZON_SECONDS)
+                    predictedX = kalmanFilterX.predictFuture(predictionHorizonSeconds)
+                    predictedY = kalmanFilterY.predictFuture(predictionHorizonSeconds)
                 } else {
                     // Nothing to track -- hold still and forget the old trajectory.
                     rawX = Float.NaN
@@ -907,10 +1187,23 @@ private fun processImageProxy(
                     predictedY = frameHeight / 2f
                 }
 
+                // No front-camera mirroring here: CameraX's ImageAnalysis frame is the
+                // raw, unmirrored sensor image for BOTH lenses (only the on-screen
+                // PreviewView mirrors the front camera, as a display-only convention
+                // for the user watching themselves). So predictedX already encodes the
+                // subject's true physical position relative to the camera's boresight
+                // for either camera, and the servo needs that -- not the mirrored,
+                // "selfie view" coordinate. Flipping it here was inverting the pan
+                // correction on the front camera. (The bounding-box/hand overlays
+                // still mirror for isFrontCamera above -- that's a separate, correct
+                // concern: drawing on top of the mirrored preview the user sees.)
                 var errX = (predictedX - frameWidth / 2f) / (frameWidth / 2f)
-                if (isFrontCamera) errX = -errX // Mirror to match the mirrored preview / user's real-world left-right.
                 errX = errX.coerceIn(-1f, 1f)
-                val errY = ((predictedY - frameHeight / 2f) / (frameHeight / 2f)).coerceIn(-1f, 1f)
+                var errY = ((predictedY - frameHeight / 2f) / (frameHeight / 2f)).coerceIn(-1f, 1f)
+                
+                if (isFrontCamera) {
+                    errY = -errY
+                }
 
                 val update = MainActivity.TrackingUpdate(
                     errX = errX,

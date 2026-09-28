@@ -5,8 +5,10 @@ package com.example.tripodtracker
  * using a discrete white-noise-acceleration process model.
  */
 class KalmanFilter(
-    private val measurementNoise: Float = DEFAULT_MEASUREMENT_NOISE,
-    private val accelerationNoise: Float = DEFAULT_ACCELERATION_NOISE
+    // var, not val: the Experiment tab tunes these live against a running filter
+    // instance (see MainActivity.kalmanFilterX/Y), not just at construction time.
+    var measurementNoise: Float = DEFAULT_MEASUREMENT_NOISE,
+    var accelerationNoise: Float = DEFAULT_ACCELERATION_NOISE
 ) {
     // State variables: [position, velocity]
     private var x = 0f
@@ -128,6 +130,6 @@ class KalmanFilter(
         // Expected magnitude of subject acceleration, in px/s^2. This is a
         // starting point, not a measured value -- tune it from the logged
         // VelocityX/VelocityY columns (see LogManager) before citing results.
-        const val DEFAULT_ACCELERATION_NOISE = 80f
+        const val DEFAULT_ACCELERATION_NOISE = 150f
     }
 }

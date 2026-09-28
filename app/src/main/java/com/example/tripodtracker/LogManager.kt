@@ -19,6 +19,11 @@ class LogManager(private val context: Context) {
     private val data = mutableListOf<String>()
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
 
+    // Set by startSession() when Experiment-tab logging begins; written as
+    // "# key: value" comment lines above the CSV header on the next saveLog(),
+    // then cleared, so each saved file records which gains produced it.
+    private var sessionMetadata: Map<String, String>? = null
+
     /**
      * @param frameTimestampNanos Monotonic frame-capture timestamp (ImageProxy.imageInfo.timestamp), not wall-clock.
      * @param rawX/@param rawY Raw detection centre in pixels; NaN if this frame had no measurement (coasting).
@@ -27,6 +32,8 @@ class LogManager(private val context: Context) {
      *   predictions at any horizon offline (predicted = filtered + velocity * horizonSeconds)
      *   for a prediction-horizon sweep without re-running the app.
      * @param dtSeconds Time since the previous filter update, in seconds.
+     * @param errX/@param errY Normalized tracking error in [-1, 1] (subject offset from frame
+     *   centre, fraction of half-frame) -- the actual EX/EY sent to the tripod that update.
      */
     fun log(
         frameTimestampNanos: Long,
@@ -38,14 +45,27 @@ class LogManager(private val context: Context) {
         filteredY: Float,
         velocityX: Float,
         velocityY: Float,
-        dtSeconds: Float
+        dtSeconds: Float,
+        errX: Float,
+        errY: Float
     ) {
         val timestamp = dateFormat.format(Date())
         val line = "$timestamp,$frameTimestampNanos,$seq,$detectionCount," +
-            "$rawX,$rawY,$filteredX,$filteredY,$velocityX,$velocityY,$dtSeconds"
+            "$rawX,$rawY,$filteredX,$filteredY,$velocityX,$velocityY,$dtSeconds,$errX,$errY"
         synchronized(lock) {
             data.add(line)
         }
+    }
+
+    /**
+     * Records the gains/config in effect for the run about to be logged (test
+     * name/notes, PID gains, Kalman noise, prediction horizon, detection mode --
+     * see MainActivity.buildSessionMetadata()). Written as a CSV comment header
+     * by the next saveLog(); call this when logging is toggled ON from the
+     * Experiment tab.
+     */
+    fun startSession(metadata: Map<String, String>) {
+        sessionMetadata = metadata
     }
 
     fun saveLog() {
@@ -69,12 +89,18 @@ class LogManager(private val context: Context) {
         val resolver = context.contentResolver
         val uri = resolver.insert(MediaStore.Files.getContentUri("external"), contentValues)
 
+        val metadata = sessionMetadata
+        sessionMetadata = null
+
         uri?.let {
             resolver.openOutputStream(it)?.use { outputStream ->
                 OutputStreamWriter(outputStream).use { writer ->
+                    metadata?.forEach { (key, value) ->
+                        writer.write("# $key: $value\n")
+                    }
                     writer.write(
                         "Timestamp,FrameTimestampNanos,Seq,DetectionCount," +
-                            "RawX,RawY,FilteredX,FilteredY,VelocityX,VelocityY,DtSeconds\n"
+                            "RawX,RawY,FilteredX,FilteredY,VelocityX,VelocityY,DtSeconds,ErrX,ErrY\n"
                     )
                     snapshot.forEach { line ->
                         writer.write("$line\n")
