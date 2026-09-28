@@ -122,8 +122,10 @@ const int TILT_NEUTRAL_US = 1500;
 // the servo can't keep up at all) but NOT gain-induced oscillation around a
 // correctly-centred target -- watch for hunting/buzzing on first power-up
 // and back KP off if you see it.
-const float DEADZONE = 0.03f;             // Normalized error for full stop. ~2.5 sigma of the app's
+float DEADZONE = 0.03f;                   // Normalized error for full stop. ~2.5 sigma of the app's
                                           // Kalman-filtered position jitter (~0.013 normalized).
+                                          // RUNTIME-TUNABLE like KP/KI/KD/MS -- see handleCalibrationInput
+                                          // (Serial "DZ<v>") and handleConfigPacket (UDP "CFG:...").
 float KP = 110.0f;                        // Proportional gain: pulse offset (us) per unit of normalized error
 float KI = 50.0f;                         // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
 float KD = 5.0f;                          // Derivative gain: kept at 0 by design (see model above). Only raise, in
@@ -357,7 +359,9 @@ void loop() {
     int eyIndex = payload.indexOf(",EY:");
     int seqIndex = payload.indexOf(",SEQ:");
 
-    if (exIndex != -1 && eyIndex != -1) {
+    if (payload.startsWith("CFG")) {
+      handleConfigPacket(payload);
+    } else if (exIndex != -1 && eyIndex != -1) {
       float errX = payload.substring(exIndex + 3, eyIndex).toFloat();
       float errY;
 
@@ -413,7 +417,12 @@ void loop() {
  * Also accepts live PID tuning (applies immediately, survives until reboot):
  *   KP<v> KI<v> KD<v>   PID gains
  *   MS<v>              MAX_SPEED_OFFSET_US (clamped 10..400)
+ *   DZ<v>              DEADZONE (clamped 0..0.5)
  *   ?                  print current values
+ *
+ * The same five gains (KP/KI/KD/MS/DZ) are also live-tunable over UDP from the
+ * app's Experiment tab -- see handleConfigPacket() / sendConfigTelemetry() and
+ * the "CFG" protocol in firmware/README.md.
  */
 void handleCalibrationInput() {
   if (!Serial.available()) return;
@@ -434,6 +443,7 @@ void handleCalibrationInput() {
   if (cmd.startsWith("KI")) { KI = cmd.substring(2).toFloat(); panIntegral = tiltIntegral = 0.0f; Serial.printf("KI = %.2f (integrators reset)\n", KI); return; }
   if (cmd.startsWith("KD")) { KD = cmd.substring(2).toFloat(); Serial.printf("KD = %.2f\n", KD); return; }
   if (cmd.startsWith("MS")) { MAX_SPEED_OFFSET_US = constrain(cmd.substring(2).toFloat(), 10.0f, 400.0f); Serial.printf("MAX_SPEED_OFFSET_US = %.0f\n", MAX_SPEED_OFFSET_US); return; }
+  if (cmd.startsWith("DZ")) { DEADZONE = constrain(cmd.substring(2).toFloat(), 0.0f, 0.5f); Serial.printf("DEADZONE = %.3f\n", DEADZONE); return; }
 
   if (line.length() < 2) return;
   char axis = line.charAt(0);
@@ -601,6 +611,60 @@ void sendBatteryTelemetry() {
                      (int) lroundf(battPackV * 1000.0f),
                      (int) lroundf(battCurrentMa),
                      battSoC * BATT_ENERGY_WH);
+  if (len <= 0) return;
+  udp.beginPacket(appIP, appPort);
+  udp.write((const uint8_t *) msg, len);
+  udp.endPacket();
+}
+
+/**
+ * Finds "<key>:" in payload and parses the float that follows, up to the next
+ * ',' or end of string. Returns `fallback` (leaves the caller's value alone)
+ * if the key isn't present, so a CFG packet can update any subset of gains.
+ */
+float parseKV(const String &payload, const char *key, float fallback) {
+  String needle = String(key) + ":";
+  int idx = payload.indexOf(needle);
+  if (idx == -1) return fallback;
+  int start = idx + needle.length();
+  int end = payload.indexOf(',', start);
+  String valueStr = (end == -1) ? payload.substring(start) : payload.substring(start, end);
+  return valueStr.toFloat();
+}
+
+/**
+ * Handles a "CFG:..." (set) or "CFG?" (query) packet from the app's Experiment
+ * tab -- see "CFG protocol" in firmware/README.md. A set packet carries a ':'
+ * after the "CFG" prefix (e.g. "CFG:KP:110.00,KI:50.00,..."); a bare query has
+ * none. Either way, always replies with the full current gain set so the app
+ * stays in sync even after a Serial-side change.
+ */
+void handleConfigPacket(const String &payload) {
+  if (payload.indexOf(':') != -1) {
+    KP = parseKV(payload, "KP", KP);
+    KI = parseKV(payload, "KI", KI);
+    KD = parseKV(payload, "KD", KD);
+    MAX_SPEED_OFFSET_US = constrain(parseKV(payload, "MS", MAX_SPEED_OFFSET_US), 10.0f, 400.0f);
+    DEADZONE = constrain(parseKV(payload, "DZ", DEADZONE), 0.0f, 0.5f);
+    panIntegral = 0.0f;
+    tiltIntegral = 0.0f;
+    Serial.print("Config updated via UDP: ");
+    printControlValues();
+  }
+  sendConfigTelemetry();
+}
+
+/**
+ * Replies with the current PID gains on the same UDP flow CFG packets arrive
+ * on, mirroring sendBatteryTelemetry()'s appIP/appPort reuse -- but unlike
+ * battery telemetry this is NOT rate-limited: every CFG/CFG? gets an
+ * immediate reply so the Experiment tab's "Apply"/"Sync" feel instant.
+ */
+void sendConfigTelemetry() {
+  if (!haveApp) return;
+  char msg[128];
+  int len = snprintf(msg, sizeof(msg), "CFG:KP:%.2f,KI:%.2f,KD:%.2f,MS:%.1f,DZ:%.3f",
+                     KP, KI, KD, MAX_SPEED_OFFSET_US, DEADZONE);
   if (len <= 0) return;
   udp.beginPacket(appIP, appPort);
   udp.write((const uint8_t *) msg, len);

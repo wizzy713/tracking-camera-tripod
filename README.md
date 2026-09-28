@@ -4,11 +4,13 @@ CamX is a technical Android application designed to interface with motorized tri
 
 ## System Features
 
-- Open Palm Gesture Locking: Raise an open palm to lock the tracker onto the nearest detected object in a crowd (see note below -- detection is not currently person-specific).
+- Dual Detection Modes: Face detection (default) or a generic Object detector, toggled per-session (see note below -- neither is person-specific).
+- Open Palm Gesture Locking: Raise an open palm to lock the tracker onto the nearest detected subject in a crowd.
 - Predictive Tracking: Implements a 1D Kalman Filter (one instance per axis) to estimate subject velocity and predict trajectory coordinates.
 - Resolution-Independent Localization: Transmits a normalized X/Y error in [-1, 1] to the hardware layer, decoupled from camera resolution and orientation.
 - Connectivity: Manual IP/port configuration to link with tripod hardware on the local Wi-Fi network.
-- Diagnostic Tools: Includes connection testing with custom payloads and telemetry logging in CSV format.
+- Experiment Tab: Live-tunes the firmware's PID gains and the app's Kalman filter/prediction horizon against a running rig, and labels CSV logging sessions with test metadata -- see [TESTING.md](./TESTING.md) for suggested experiments.
+- Diagnostic Tools: Includes connection testing with custom payloads and telemetry logging in CSV format, including per-frame tracking error (`ErrX`/`ErrY`).
 - Battery Readout: The tripod's INA219 fuel gauge streams pack state of charge back over the same UDP link; the camera screen shows a live battery indicator (%, voltage, colour-coded).
 - Comprehensive Camera Control: Provides high-resolution photo capture, video recording with audio, and hardware flip capabilities.
 
@@ -17,20 +19,21 @@ CamX is a technical Android application designed to interface with motorized tri
 ### 1. Localization Algorithm
 The localization process follows a multi-stage pipeline:
 - Frame Acquisition: Frames are captured via CameraX; analysis resolution is device-dependent (not pinned).
-- Subject Identification: Google ML Kit Object Detection analyzes the frame to produce bounding boxes for prominent objects (a generic detector, not a person detector -- see ARCHITECTURE.md).
+- Subject Identification: Google ML Kit locates the subject via one of two selectable modes -- Face Detection (default) or generic Object Detection (a non-person-specific detector, useful for subjects a face detector can't see, e.g. the pendulum test in TESTING.md) -- see ARCHITECTURE.md.
 - Gesture Recognition: MediaPipe Hand Landmarker identifies an open palm gesture to initiate subject locking.
 - Normalized Error Calculation: The bounding box center is converted to a normalized X/Y error in [-1, 1] relative to frame center, in the rotation-corrected upright frame.
-- Trajectory Estimation: A Kalman Filter per axis processes the coordinates to filter noise and predict the subject's position ~100ms into the future (a placeholder pending a measured end-to-end latency figure).
+- Trajectory Estimation: A Kalman Filter per axis processes the coordinates to filter noise and predict the subject's position a configurable horizon (~200ms default) into the future -- live-tunable, along with the filter's noise constants, from the Experiment tab.
 
 ### 2. Communication Protocol
 - Hardware Link: UDP (User Datagram Protocol) is utilized for minimum latency transmission.
 - Payload Format: "EX:[FLOAT],EY:[FLOAT],SEQ:[UINT]" -- normalized error per axis plus a sequence number for loss/reorder detection.
-- Reverse Telemetry: The firmware replies on the same socket with "BATT:[%],MV:[mV],MA:[mA],WH:[Wh]" every ~2s for the on-screen battery indicator.
+- Reverse Telemetry: The firmware replies on the same socket with "BATT:[%],MV:[mV],MA:[mA],WH:[Wh]" every ~2s for the on-screen battery indicator, and with "CFG:KP:...,KI:...,KD:...,MS:...,DZ:..." immediately after any PID-gain set/query from the Experiment tab.
 - Configuration: The IP address and port of the ESP32 are entered manually in the connection settings.
 
 ## Project Structure
 
 - MainActivity.kt: Central controller managing application state, UI composition, and hardware coordination.
+- ExperimentScreen.kt: Live PID/Kalman tuning UI and labeled test-run logging.
 - KalmanFilter.kt: Mathematical implementation for state estimation and trajectory prediction.
 - UdpSender.kt: Managed network worker for asynchronous hardware command transmission.
 - LogManager.kt: Utility for persistent CSV-based telemetry recording.
@@ -45,10 +48,17 @@ The localization process follows a multi-stage pipeline:
 ## Dependencies
 
 - Android Jetpack CameraX (v1.4.1)
-- Google ML Kit Object Detection
+- Google ML Kit Face Detection + Object Detection
 - MediaPipe Tasks Vision (v0.10.14)
 - Android Jetpack Compose (Material 3)
 - Kotlin Coroutines for asynchronous processing
+
+## Testing
+
+See [TESTING.md](./TESTING.md) for the suggested evaluation protocol (step response,
+pendulum swing at varied heights/velocities, occlusion/coast, deadzone jitter, and
+end-to-end latency measurement), built around the Experiment tab and the CSV's `ErrX`/
+`ErrY` tracking-error columns.
 
 ## License
 Educational and hobbyist use only.
