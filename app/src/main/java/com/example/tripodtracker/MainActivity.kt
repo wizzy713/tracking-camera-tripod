@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
 import android.view.WindowManager
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -52,6 +53,8 @@ import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
+import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetector as BallDetector
+import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetector
@@ -117,8 +120,11 @@ class MainActivity : ComponentActivity() {
     lateinit var logManager: LogManager
     @Volatile var handLandmarker: HandLandmarker? = null
 
-    private var esp32Ip by mutableStateOf("10.179.76.141")
-    private var udpPort by mutableIntStateOf(4210)
+    // Tripod address. Loaded from / saved to SharedPreferences (see onCreate and
+    // the Settings screen's onConnect), so it survives app restarts; these are
+    // only the first-run defaults.
+    private var esp32Ip by mutableStateOf(DEFAULT_ESP32_IP)
+    private var udpPort by mutableIntStateOf(DEFAULT_UDP_PORT)
     private var isLogging by mutableStateOf(false)
     private var currentScreen by mutableStateOf("camera")
     private var lockedId by mutableStateOf<Int?>(null)
@@ -436,6 +442,140 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+
+        val onToggleLogging: (Boolean) -> Unit = {
+            isLogging = it
+            if (it) logManager.startSession(buildSessionMetadata()) else logManager.saveLog()
+        }
+
+        when (currentScreen) {
+            "settings" -> {
+                BackHandler { currentScreen = "camera" }
+                ConnectionScreen(
+                    currentIp = esp32Ip,
+                    currentPort = udpPort,
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    onConnect = { ip, port ->
+                        esp32Ip = ip
+                        udpPort = port
+                        saveConnection(ip, port)
+                        currentScreen = "camera"
+                    },
+                    onTest = { ip, port, msg ->
+                        udpSender.updateTarget(ip, port)
+                        udpSender.send(msg)
+                        Toast.makeText(this, "Test packet sent to $ip", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+            "experiment" -> {
+                BackHandler { currentScreen = "camera" }
+                ExperimentScreen(
+                    tripodConfig = tripodConfig,
+                    onApplyPid = { config ->
+                        udpSender.send(
+                            String.format(
+                                Locale.US,
+                                "CFG:KP:%.2f,KI:%.2f,KD:%.2f,MS:%.1f,DZ:%.3f",
+                                config.kp, config.ki, config.kd, config.maxSpeedOffsetUs, config.deadzone
+                            )
+                        )
+                    },
+                    onSyncFromTripod = { udpSender.send("CFG?") },
+                    kalmanFilterX = kalmanFilterX,
+                    kalmanFilterY = kalmanFilterY,
+                    predictionHorizonSeconds = predictionHorizonSeconds,
+                    onPredictionHorizonChange = { predictionHorizonSeconds = it },
+                    detectionMode = detectionMode,
+                    onDetectionModeChange = { mode ->
+                        detectionMode = mode
+                        lockedId = null
+                        kalmanFilterX.reset()
+                        kalmanFilterY.reset()
+                    },
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    testName = testName,
+                    onTestNameChange = { testName = it },
+                    testNotes = testNotes,
+                    onTestNotesChange = { testNotes = it },
+                    onBack = { currentScreen = "camera" }
+                )
+            }
+            else -> {
+                CameraPreviewScreen(
+                    cameraExecutor,
+                    kalmanFilterX,
+                    kalmanFilterY,
+                    handLandmarker,
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    onOpenSettings = { currentScreen = "settings" },
+                    onOpenExperiment = { currentScreen = "experiment" },
+                    lockedId = lockedId,
+                    battery = batteryStatus,
+                    detectionMode = detectionMode,
+                    onDetectionModeChange = { mode ->
+                        detectionMode = mode
+                        lockedId = null
+                        kalmanFilterX.reset()
+                        kalmanFilterY.reset()
+                    },
+                    predictionHorizonSeconds = predictionHorizonSeconds,
+                    onUnlock = { lockedId = null },
+                    onTargetUpdate = { id -> lockedId = id }
+                ) { update ->
+                    val seq = packetSeq++
+                    udpSender.send(String.format(Locale.US, "EX:%.4f,EY:%.4f,SEQ:%d", update.errX, update.errY, seq))
+                    if (isLogging) {
+                        logManager.log(
+                            frameTimestampNanos = update.frameTimestampNanos,
+                            seq = seq,
+                            detectionCount = update.detectionCount,
+                            rawX = update.rawX,
+                            rawY = update.rawY,
+                            filteredX = update.filteredX,
+                            filteredY = update.filteredY,
+                            velocityX = update.velocityX,
+                            velocityY = update.velocityY,
+                            dtSeconds = update.dtSeconds,
+                            errX = update.errX,
+                            errY = update.errY
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Snapshot of every tunable in effect right now, written as a CSV comment
+     * header by LogManager.saveLog() so a saved log is self-describing about
+     * which gains produced it. Called when logging is toggled ON.
+     */
+    private fun saveConnection(ip: String, port: Int) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(PREF_ESP32_IP, ip)
+            .putInt(PREF_UDP_PORT, port)
+            .apply()
+    }
+
+    private fun buildSessionMetadata(): Map<String, String> {
+        val cfg = tripodConfig
+        return linkedMapOf(
+            "test_name" to testName.ifBlank { "(unnamed)" },
+            "test_notes" to testNotes,
+            "detection_mode" to detectionMode.name,
+            "prediction_horizon_s" to predictionHorizonSeconds.toString(),
+            "kalman_measurement_noise" to kalmanFilterX.measurementNoise.toString(),
+            "kalman_acceleration_noise" to kalmanFilterX.accelerationNoise.toString(),
+            "tripod_kp" to (cfg?.kp?.toString() ?: "unknown (not synced)"),
+            "tripod_ki" to (cfg?.ki?.toString() ?: "unknown (not synced)"),
+            "tripod_kd" to (cfg?.kd?.toString() ?: "unknown (not synced)"),
+            "tripod_max_speed_offset_us" to (cfg?.maxSpeedOffsetUs?.toString() ?: "unknown (not synced)"),
+            "tripod_deadzone" to (cfg?.deadzone?.toString() ?: "unknown (not synced)")
+        )
     }
 
     /**
@@ -515,6 +655,15 @@ fun CameraPreviewScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val previewView = remember { PreviewView(context) }
+
+    // The analyzer lambda below is created once per camera bind, so reading the
+    // plain parameters there would freeze them at bind time (e.g. the mode toggle
+    // or a palm lock wouldn't reach the pipeline until the camera rebinds). These
+    // always hold the latest recomposed values.
+    val currentLandmarker by rememberUpdatedState(landmarker)
+    val currentLockedId by rememberUpdatedState(lockedId)
+    val currentDetectionMode by rememberUpdatedState(detectionMode)
+    val currentPredictionHorizon by rememberUpdatedState(predictionHorizonSeconds)
 
     var cameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_BACK_CAMERA) }
     var detectionResult by remember { mutableStateOf<MainActivity.DetectionResult?>(null) }
@@ -1009,8 +1158,12 @@ fun ConnectionScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            Button(onClick = { onTest(ip, port.toIntOrNull() ?: 4210, testMessage) }) { Text("Test Connection") }
-            Button(onClick = { onConnect(ip, port.toIntOrNull() ?: 4210) }) { Text("Save & Connect") }
+            // Trim and range-check here so a stray space or bad port is never
+            // saved to preferences (and never reaches DatagramPacket).
+            val cleanIp = ip.trim()
+            val cleanPort = port.trim().toIntOrNull()?.takeIf { it in 1..65535 } ?: DEFAULT_UDP_PORT
+            Button(onClick = { onTest(cleanIp, cleanPort, testMessage) }, enabled = cleanIp.isNotEmpty()) { Text("Test Connection") }
+            Button(onClick = { onConnect(cleanIp, cleanPort) }, enabled = cleanIp.isNotEmpty()) { Text("Save & Connect") }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -1063,14 +1216,18 @@ private fun processImageProxy(
         var palmY = 0f
         var handLandmarks: List<Offset> = emptyList()
 
+        // Upright RGB copy of the frame for the MediaPipe models (hand landmarker
+        // and ball detector). Lazy so it's built at most once per frame, and not
+        // at all on FACE-mode frames that skip the hand pass.
+        val uprightBitmap by lazy { imageProxy.toBitmapInternal(rotation) }
+
         // Only detect hands periodically to save resources and prevent crashes
         if (shouldDetectHands) {
             handLandmarker?.let { landmarker ->
                 try {
                     // Rotate to the same upright frame ML Kit uses, so palm
                     // coordinates and bounding-box coordinates are comparable.
-                    val bitmap = imageProxy.toBitmapInternal(rotation)
-                    val mpImage = BitmapImageBuilder(bitmap).build()
+                    val mpImage = BitmapImageBuilder(uprightBitmap).build()
                     val result = landmarker.detect(mpImage)
                     if (result.landmarks().isNotEmpty()) {
                         val hand = result.landmarks()[0]

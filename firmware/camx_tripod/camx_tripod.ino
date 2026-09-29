@@ -39,6 +39,7 @@
 #include <Adafruit_INA219.h>
 #include <math.h>
 #include <string.h>
+#include <esp_system.h>
 
 // --- Configuration ---
 const char* ssid = "Tab";
@@ -250,6 +251,16 @@ float lastErrX = 0.0f;
 float lastErrY = 0.0f;
 unsigned long lastUpdateMillis = 0;
 
+// Slew-limited commanded offset from neutral (us, signed, already includes
+// *_DIR) -- what is actually being written to each servo right now.
+float panCmdOffsetUs = 0.0f;
+float tiltCmdOffsetUs = 0.0f;
+
+// WiFi link state (see onWiFiEvent)
+volatile bool wifiUp = false;
+unsigned long wifiDownSinceMs = 0;
+unsigned long lastWifiReconnectMs = 0;
+
 uint32_t lastSeq = 0;
 bool haveSeq = false;
 
@@ -258,6 +269,11 @@ char packetBuffer[PACKET_BUFFER_SIZE];
 
 void setup() {
   Serial.begin(115200);
+
+  // Why did we (re)boot? A BROWNOUT here means the supply sagged -- almost
+  // always servo current spikes on the shared 5 V rail.
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  Serial.printf("\nReset reason: %s\n", resetReasonName(resetReason));
 
   // Onboard LED on, solid, as a power/alive indicator -- do this first so a
   // board that hangs later still shows it powered up. On the ESP32-C6 DevKit
@@ -269,6 +285,13 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
 #endif
+
+  if (resetReason == ESP_RST_BROWNOUT) {
+    Serial.println("WARNING: last reset was a BROWNOUT -- the supply sagged (servo current");
+    Serial.println("spikes on the shared 5 V rail?). Add bulk capacitance on the servo rail,");
+    Serial.println("power the servos separately, or lower MAX_SLEW_US_PER_S / the gains.");
+    signalBrownoutOnLed();
+  }
 
   // Initialize Servos. setPeriodHertz + explicit pulse-width range before
   // attach() matches ESP32Servo's own recommendation for non-classic-ESP32
@@ -326,6 +349,7 @@ void setup() {
 
 void loop() {
   handleCalibrationInput();
+  maintainWiFi();
 
   // Drain the socket each iteration so we always act on the most recent
   // packet rather than a backlog of stale coordinates built up under load.
@@ -339,6 +363,21 @@ void loop() {
     int len = udp.read(packetBuffer, PACKET_BUFFER_SIZE - 1);
     if (len <= 0) continue;
     packetBuffer[len] = 0;
+
+    // Remember who is talking to us so battery telemetry can go back on the
+    // same flow (the app receives on the socket it sends from).
+    appIP = udp.remoteIP();
+    appPort = udp.remotePort();
+    haveApp = true;
+
+    // Discovery: the app broadcasts "DISCOVER" when it can't hear us, and we
+    // answer it directly so it learns our IP. Handled per packet (not via
+    // latestPacket) so a probe mixed in with tracking packets is never dropped.
+    if (strncmp(packetBuffer, "DISCOVER", 8) == 0) {
+      announceTripod();
+      continue;
+    }
+
     memcpy(latestPacket, packetBuffer, len + 1);
     latestLen = len;
 
@@ -391,9 +430,9 @@ void loop() {
   // servo which just holds still. If the app closes or WiFi drops, force a
   // stop rather than let it run away.
   if (!motorsStopped && (millis() - lastPacketMillis > SIGNAL_TIMEOUT_MS)) {
-    panServo.writeMicroseconds(PAN_NEUTRAL_US);
-    tiltServo.writeMicroseconds(TILT_NEUTRAL_US);
+    stopServosNow();
     motorsStopped = true;
+    lastUpdateMillis = 0;   // next packet starts a fresh dt, not the whole outage
     panSaturatedSince = 0;
     tiltSaturatedSince = 0;
     controlDiverged = false;
@@ -668,8 +707,7 @@ void updateTripod(float errX, float errY) {
   // running away (usually a wrong PAN_DIR/TILT_DIR). Stop both, dump the
   // integrators, and say so once -- do not keep commanding speed.
   if (axisDiverging(errX, panSaturatedSince) || axisDiverging(errY, tiltSaturatedSince)) {
-    panServo.writeMicroseconds(PAN_NEUTRAL_US);
-    tiltServo.writeMicroseconds(TILT_NEUTRAL_US);
+    stopServosNow();
     panIntegral = 0.0f;
     tiltIntegral = 0.0f;
     if (!controlDiverged) {
@@ -689,11 +727,100 @@ void updateTripod(float errX, float errY) {
   float panOffset = computeAxisPID(errX, panIntegral, lastErrX, dt);
   float tiltOffset = computeAxisPID(errY, tiltIntegral, lastErrY, dt);
 
-  int panPulse = PAN_NEUTRAL_US + PAN_DIR * (int)panOffset;
-  int tiltPulse = TILT_NEUTRAL_US + TILT_DIR * (int)tiltOffset;
+  // Ramp toward the PID target instead of stepping to it (see
+  // MAX_SLEW_US_PER_S). First packet after a stop has dt == 0; treat it as one
+  // nominal 30 Hz frame so the servo still starts moving.
+  float slewDt = (dt > 0.0f) ? min(dt, MAX_SLEW_DT_S) : (1.0f / 30.0f);
+  float maxStep = MAX_SLEW_US_PER_S * slewDt;
+  panCmdOffsetUs  += constrain(PAN_DIR  * panOffset  - panCmdOffsetUs,  -maxStep, maxStep);
+  tiltCmdOffsetUs += constrain(TILT_DIR * tiltOffset - tiltCmdOffsetUs, -maxStep, maxStep);
+
+  int panPulse = PAN_NEUTRAL_US + (int)lroundf(panCmdOffsetUs);
+  int tiltPulse = TILT_NEUTRAL_US + (int)lroundf(tiltCmdOffsetUs);
 
   panServo.writeMicroseconds(panPulse);
   tiltServo.writeMicroseconds(tiltPulse);
 
   Serial.printf("Servo pulse (us) -> pan: %d, tilt: %d\n", panPulse, tiltPulse);
+}
+
+/**
+ * Immediate stop (bypasses the slew limit) for the failsafe and divergence
+ * guard, and resets the slew state so the next move ramps up from neutral.
+ */
+void stopServosNow() {
+  panServo.writeMicroseconds(PAN_NEUTRAL_US);
+  tiltServo.writeMicroseconds(TILT_NEUTRAL_US);
+  panCmdOffsetUs = 0.0f;
+  tiltCmdOffsetUs = 0.0f;
+}
+
+/**
+ * Logs WiFi link changes with the disconnect reason code, which tells apart a
+ * weak signal (BEACON_TIMEOUT), the hotspot dropping us (AUTH_EXPIRE /
+ * ASSOC_LEAVE ...), and wrong credentials (AUTH_FAIL / NO_AP_FOUND).
+ */
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      wifiUp = true;
+      Serial.printf("WiFi up, IP %s\n", WiFi.localIP().toString().c_str());
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
+      uint8_t reason = info.wifi_sta_disconnected.reason;
+      if (wifiUp) wifiDownSinceMs = millis();
+      wifiUp = false;
+      Serial.printf("WiFi DISCONNECTED, reason %u (%s), RSSI was %d dBm\n",
+                    reason, WiFi.disconnectReasonName((wifi_err_reason_t) reason),
+                    info.wifi_sta_disconnected.rssi);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/**
+ * Fallback for the core's auto-reconnect: if the link has been down for
+ * WIFI_RECONNECT_INTERVAL_MS, kick a reconnect ourselves.
+ */
+void maintainWiFi() {
+  if (wifiUp) return;
+  unsigned long now = millis();
+  if (now - wifiDownSinceMs < WIFI_RECONNECT_INTERVAL_MS) return;
+  if (now - lastWifiReconnectMs < WIFI_RECONNECT_INTERVAL_MS) return;
+  lastWifiReconnectMs = now;
+  Serial.println("WiFi still down -- forcing reconnect");
+  WiFi.reconnect();
+}
+
+const char *resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON:   return "POWERON (normal power-up)";
+    case ESP_RST_SW:        return "SW (software restart)";
+    case ESP_RST_PANIC:     return "PANIC (crash)";
+    case ESP_RST_INT_WDT:   return "INT_WDT (interrupt watchdog)";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT (task watchdog)";
+    case ESP_RST_WDT:       return "WDT (other watchdog)";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT (supply voltage sagged)";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_EXT:       return "EXT (reset pin)";
+    default:                return "UNKNOWN/OTHER";
+  }
+}
+
+/**
+ * Three red blinks at boot after a brownout, so a power-sag reboot is visible
+ * without Serial Monitor. (The battery colour takes over the LED afterwards.)
+ */
+void signalBrownoutOnLed() {
+#if defined(RGB_BUILTIN)
+  for (int i = 0; i < 3; i++) {
+    neopixelWrite(RGB_BUILTIN, 60, 0, 0);
+    delay(200);
+    neopixelWrite(RGB_BUILTIN, 0, 0, 0);
+    delay(200);
+  }
+  neopixelWrite(RGB_BUILTIN, 0, 40, 0);
+#endif
 }

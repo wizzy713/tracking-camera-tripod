@@ -3,7 +3,9 @@ package com.example.tripodtracker
 import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import android.os.SystemClock
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
@@ -69,8 +71,36 @@ class UdpSender {
     }
 
     fun updateTarget(ip: String, port: Int) {
+        if (ip != targetIp) lastRxFromTargetMs = 0L
         targetIp = ip
         targetPort = port
+    }
+
+    /**
+     * Broadcasts `DISCOVER` on every active IPv4 network (each interface's
+     * directed broadcast address, plus 255.255.255.255). A tripod on the same
+     * network answers with `TRIPOD:<ip>`, surfaced via [onTripodFound].
+     */
+    fun discover() {
+        executor.execute {
+            try {
+                val targets = mutableSetOf<InetAddress>(InetAddress.getByName("255.255.255.255"))
+                NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+                    .filter { it.isUp && !it.isLoopback }
+                    .flatMap { it.interfaceAddresses }
+                    .mapNotNullTo(targets) { it.broadcast }
+                val buffer = "DISCOVER".toByteArray()
+                for (address in targets) {
+                    try {
+                        socket.send(DatagramPacket(buffer, buffer.size, address, targetPort))
+                    } catch (e: Exception) {
+                        Log.w("UdpSender", "discover to ${address.hostAddress} failed: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("UdpSender", "discover failed: ${e.message}")
+            }
+        }
     }
 
     fun send(message: String) {
