@@ -89,10 +89,9 @@ fun ExperimentScreen(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // KP/KI/KD maxima match the firmware's KP_LIMIT/KI_LIMIT/KD_LIMIT power-safety caps.
-            GainSlider("KP", kp, 0f..200f) { kp = it }
-            GainSlider("KI", ki, 0f..100f) { ki = it }
-            GainSlider("KD", kd, 0f..20f) { kd = it }
+            GainSlider("KP", kp, 0f..300f) { kp = it }
+            GainSlider("KI", ki, 0f..150f) { ki = it }
+            GainSlider("KD", kd, 0f..50f) { kd = it }
             GainSlider("MAX_SPEED_OFFSET_US", maxSpeedOffsetUs, 10f..400f, decimals = 0) { maxSpeedOffsetUs = it }
             GainSlider("DEADZONE", deadzone, 0f..0.2f, decimals = 3) { deadzone = it }
 
@@ -133,15 +132,14 @@ fun ExperimentScreen(
                     label = { Text("Face") }
                 )
                 FilterChip(
-                    selected = detectionMode == DetectionMode.BALL,
-                    onClick = { onDetectionModeChange(DetectionMode.BALL) },
-                    label = { Text("Ball") }
+                    selected = detectionMode == DetectionMode.OBJECT,
+                    onClick = { onDetectionModeChange(DetectionMode.OBJECT) },
+                    label = { Text("Object") }
                 )
             }
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                "Ball mode tracks a yellow tennis ball by colour (works through a net), falling back " +
-                    "to the COCO \"sports ball\" model -- " +
+                "Object mode tracks any prominent object (unlabeled) instead of a face -- " +
                     "use it for the pendulum test in TESTING.md.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant

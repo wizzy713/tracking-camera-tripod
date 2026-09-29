@@ -46,11 +46,10 @@ The core test the Experiment tab's PID/Kalman tuning is meant to support: a mech
 repeatable motion profile with a wide, controllable range of velocity and acceleration,
 which a person walking or a hand-held subject can't reliably reproduce run-to-run.
 
-**Rig**: a fluorescent-yellow tennis ball (Ball mode finds it by colour, so a net
-or string around it is fine; keep other yellow-green objects out of frame. Other balls
-fall back to the COCO `sports ball` model) on a
-string or rigid rod, swinging in the plane the camera sees. Switch
-**Detection mode -> Ball** in the Experiment tab first, since a ball has no face.
+**Rig**: a ball (or any plain, visually simple object with good contrast against the
+background -- ML Kit's generic object detector works best against an uncluttered scene,
+not a specific shape) on a string or rigid rod, swinging in the plane the camera sees.
+Switch **Detection mode -> Object** in the Experiment tab first, since a ball has no face.
 
 **Sweep two independent parameters**:
 - **String/rod length** `L` (e.g. 0.3 m / 0.6 m / 1.0 m) -- changes the period
