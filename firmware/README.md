@@ -155,7 +155,7 @@ look-ahead already removes), so the **shipped defaults are `KP = 110`, `KI = 50`
 Monitor (115200 baud), no reflash -- so tune on the running rig:
 
 ```
-KP120     set KP = 120
+KP120     set KP = 120   (KP/KI/KD/MS/DZ are clamped to the power-safety caps above)
 KI70      set KI = 70   (also zeroes the integrators)
 KD0       set KD
 MS160     set MAX_SPEED_OFFSET_US = 160
