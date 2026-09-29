@@ -3,7 +3,9 @@ package com.example.tripodtracker
 import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import android.os.SystemClock
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
@@ -45,7 +47,7 @@ data class TripodConfig(
  */
 class UdpSender {
     private val executor = Executors.newSingleThreadExecutor()
-    private val socket = DatagramSocket()
+    private val socket = DatagramSocket().apply { broadcast = true }
 
     @Volatile private var running = true
     private val receiver: Thread
@@ -56,8 +58,22 @@ class UdpSender {
     /** Invoked (on the receiver thread) whenever a CFG reply is parsed. */
     @Volatile var onConfig: ((TripodConfig) -> Unit)? = null
 
-    private var targetIp: String = "10.179.76.141"
-    private var targetPort: Int = 4210
+    /**
+     * Invoked (on the receiver thread) with the tripod's IP when it answers a
+     * [discover] broadcast with `TRIPOD:<ip>`.
+     */
+    @Volatile var onTripodFound: ((String) -> Unit)? = null
+
+    @Volatile private var targetIp: String = "10.47.140.33"
+    @Volatile private var targetPort: Int = 4210
+
+    /**
+     * [SystemClock.elapsedRealtime] of the last packet received from the current
+     * target, or 0 if none yet. The tripod pushes battery telemetry every ~2 s
+     * once it hears from us, so a stale value means we're not connected.
+     */
+    @Volatile var lastRxFromTargetMs: Long = 0L
+        private set
 
     private var sentCount = 0L
 
@@ -70,8 +86,15 @@ class UdpSender {
                     val packet = DatagramPacket(buffer, buffer.size)
                     socket.receive(packet)
                     val message = String(packet.data, 0, packet.length).trim()
-                    Log.d("UdpSender", "rx from ${packet.address?.hostAddress}:${packet.port} -> \"$message\"")
+                    val fromIp = packet.address?.hostAddress
+                    Log.d("UdpSender", "rx from $fromIp:${packet.port} -> \"$message\"")
+                    if (fromIp == targetIp) lastRxFromTargetMs = SystemClock.elapsedRealtime()
                     when {
+                        message.startsWith("TRIPOD") -> {
+                            // Trust the packet's source address over the payload: it's
+                            // the address that actually reached us.
+                            if (fromIp != null) onTripodFound?.invoke(fromIp)
+                        }
                         message.startsWith("BATT:") -> {
                             val status = parseBattery(message)
                             if (status != null) onBattery?.invoke(status)
@@ -92,8 +115,36 @@ class UdpSender {
     }
 
     fun updateTarget(ip: String, port: Int) {
+        if (ip != targetIp) lastRxFromTargetMs = 0L
         targetIp = ip
         targetPort = port
+    }
+
+    /**
+     * Broadcasts `DISCOVER` on every active IPv4 network (each interface's
+     * directed broadcast address, plus 255.255.255.255). A tripod on the same
+     * network answers with `TRIPOD:<ip>`, surfaced via [onTripodFound].
+     */
+    fun discover() {
+        executor.execute {
+            try {
+                val targets = mutableSetOf<InetAddress>(InetAddress.getByName("255.255.255.255"))
+                NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+                    .filter { it.isUp && !it.isLoopback }
+                    .flatMap { it.interfaceAddresses }
+                    .mapNotNullTo(targets) { it.broadcast }
+                val buffer = "DISCOVER".toByteArray()
+                for (address in targets) {
+                    try {
+                        socket.send(DatagramPacket(buffer, buffer.size, address, targetPort))
+                    } catch (e: Exception) {
+                        Log.w("UdpSender", "discover to ${address.hostAddress} failed: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("UdpSender", "discover failed: ${e.message}")
+            }
+        }
     }
 
     fun send(message: String) {
