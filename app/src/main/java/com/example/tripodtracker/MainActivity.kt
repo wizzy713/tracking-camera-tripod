@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
 import android.view.WindowManager
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -52,13 +53,12 @@ import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
+import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetector as BallDetector
+import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
-import com.google.mlkit.vision.objects.ObjectDetection
-import com.google.mlkit.vision.objects.ObjectDetector
-import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -77,13 +77,32 @@ import kotlin.math.hypot
 private const val DEFAULT_PREDICTION_HORIZON_SECONDS = 0.2f
 
 /**
- * Which ML Kit pipeline is used to find the tracked subject. FACE (default) is
- * the existing face-lock behavior. OBJECT restores ML Kit's generic "prominent
- * object" detector (unlabeled, no classification) so a non-face subject -- e.g.
- * a ball for the pendulum test in TESTING.md -- can be tracked too. Selectable
- * from the Experiment tab or the camera-screen toggle icon.
+ * Which pipeline is used to find the tracked subject. FACE (default) is the
+ * existing ML Kit face-lock behavior. BALL finds an optic-yellow tennis ball by
+ * colour (ColorBallDetector, robust to a net around it), falling back to
+ * MediaPipe's Object Detector with an EfficientDet-Lite0 COCO model filtered to
+ * the "sports ball" class, so only balls are tracked -- e.g. for the pendulum test in TESTING.md. Selectable from
+ * the Experiment tab or the camera-screen toggle icon.
  */
-enum class DetectionMode { FACE, OBJECT }
+enum class DetectionMode { FACE, BALL }
+
+// Tripod address persistence (Settings screen -> SharedPreferences).
+private const val PREFS_NAME = "tripod_connection"
+private const val PREF_ESP32_IP = "esp32_ip"
+private const val PREF_UDP_PORT = "udp_port"
+private const val DEFAULT_ESP32_IP = "10.47.140.33"
+private const val DEFAULT_UDP_PORT = 4210
+// Auto-discovery: probe every DISCOVERY_INTERVAL_MS once the tripod has been
+// silent for DISCOVERY_SILENCE_MS (its telemetry normally arrives every ~2 s).
+private const val DISCOVERY_INTERVAL_MS = 2000L
+private const val DISCOVERY_SILENCE_MS = 5000L
+
+// COCO model bundled in assets/ for DetectionMode.BALL, and the only class kept.
+private const val BALL_MODEL_ASSET = "efficientdet_lite0.tflite"
+private const val BALL_CATEGORY = "sports ball"
+// Balls are small and often motion-blurred at the bottom of a swing, so this is
+// lower than MediaPipe's usual 0.5 default; raise it if false positives appear.
+private const val BALL_SCORE_THRESHOLD = 0.3f
 
 // How many consecutive frames a locked target may go unmatched before the lock
 // is released. During this window the system coasts on the Kalman prediction
@@ -117,14 +136,27 @@ class MainActivity : ComponentActivity() {
     lateinit var logManager: LogManager
     @Volatile var handLandmarker: HandLandmarker? = null
 
-    private var esp32Ip by mutableStateOf("10.179.76.141")
-    private var udpPort by mutableIntStateOf(4210)
+    // Tripod address. Loaded from / saved to SharedPreferences (see onCreate and
+    // the Settings screen's onConnect), so it survives app restarts; these are
+    // only the first-run defaults.
+    private var esp32Ip by mutableStateOf(DEFAULT_ESP32_IP)
+    private var udpPort by mutableIntStateOf(DEFAULT_UDP_PORT)
     private var isLogging by mutableStateOf(false)
     private var currentScreen by mutableStateOf("camera")
     private var lockedId by mutableStateOf<Int?>(null)
     private var permissionsGranted by mutableStateOf(false)
-    private var packetSeq = 0L
+    private var packetSeq = (System.currentTimeMillis() % 1_000_000_000L)
     private var batteryStatus by mutableStateOf<BatteryStatus?>(null)
+
+    // Experiment tab state: live PID gains as last reported by the tripod (null
+    // until the first CFG reply arrives), which subject-finding pipeline is
+    // active, the Kalman prediction horizon, and free-text metadata for the CSV
+    // session header -- see buildSessionMetadata() and ExperimentScreen.kt.
+    private var tripodConfig by mutableStateOf<TripodConfig?>(null)
+    private var detectionMode by mutableStateOf(DetectionMode.FACE)
+    private var predictionHorizonSeconds by mutableStateOf(DEFAULT_PREDICTION_HORIZON_SECONDS)
+    private var testName by mutableStateOf("")
+    private var testNotes by mutableStateOf("")
 
     data class DetectedObjectInfo(
         val boundingBox: Rect,
@@ -202,10 +234,32 @@ class MainActivity : ComponentActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
         logManager = LogManager(this)
 
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        esp32Ip = prefs.getString(PREF_ESP32_IP, null)?.takeIf { it.isNotBlank() } ?: DEFAULT_ESP32_IP
+        udpPort = prefs.getInt(PREF_UDP_PORT, DEFAULT_UDP_PORT).takeIf { it in 1..65535 } ?: DEFAULT_UDP_PORT
+
         // Battery telemetry from the tripod's INA219 fuel gauge (UDP reply).
         udpSender.onBattery = { status ->
             Log.d("CamX", "battery telemetry: $status")
             runOnUiThread { batteryStatus = status }
+        }
+
+        // PID config replies from the tripod (Experiment tab "Sync"/"Apply").
+        udpSender.onConfig = { config ->
+            Log.d("CamX", "tripod config: $config")
+            runOnUiThread { tripodConfig = config }
+        }
+        // Auto-connect: adopt (and save) the address of whichever tripod answers
+        // a DISCOVER broadcast, if it isn't the one we're already using.
+        udpSender.onTripodFound = { ip ->
+            runOnUiThread {
+                if (ip != esp32Ip && !isFinishing && !isDestroyed) {
+                    Log.i("CamX", "tripod discovered at $ip (was $esp32Ip)")
+                    esp32Ip = ip
+                    saveConnection(ip, udpPort)
+                    Toast.makeText(this, "Tripod found at $ip", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
 
         thread { setupHandLandmarker() }
@@ -255,6 +309,18 @@ class MainActivity : ComponentActivity() {
             udpSender.updateTarget(esp32Ip, udpPort)
         }
 
+        // While nothing has been heard from the tripod for a few seconds (it
+        // pushes telemetry every ~2 s once connected), broadcast DISCOVER so a
+        // tripod with a new DHCP address is found and adopted automatically.
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(DISCOVERY_INTERVAL_MS)
+                if (SystemClock.elapsedRealtime() - udpSender.lastRxFromTargetMs > DISCOVERY_SILENCE_MS) {
+                    udpSender.discover()
+                }
+            }
+        }
+
         if (DEBUG_FAKE_BATTERY) {
             LaunchedEffect(Unit) {
                 var pct = (62..96).random()
@@ -265,66 +331,6 @@ class MainActivity : ComponentActivity() {
                         millivolts = (6000 + pct * 24).coerceIn(6000, 8400),
                         milliamps = (220..880).random(),
                         whRemaining = pct / 100f * 9.62f
-                    )
-                    delay(3000)
-                    pct -= (0..1).random()
-                    if (pct < 12) pct = (86..97).random() // loop for a continuous demo
-                }
-            }
-        }
-
-        if (currentScreen == "settings") {
-            BackHandler { currentScreen = "camera" }
-            ConnectionScreen(
-                currentIp = esp32Ip,
-                currentPort = udpPort,
-                isLogging = isLogging,
-                onToggleLogging = {
-                    isLogging = it
-                    if (!it) logManager.saveLog()
-                },
-                onConnect = { ip, port ->
-                    esp32Ip = ip
-                    udpPort = port
-                    currentScreen = "camera"
-                },
-                onTest = { ip, port, msg ->
-                    udpSender.updateTarget(ip, port)
-                    udpSender.send(msg)
-                    Toast.makeText(this, "Test packet sent to $ip", Toast.LENGTH_SHORT).show()
-                }
-            )
-        } else {
-            CameraPreviewScreen(
-                cameraExecutor,
-                kalmanFilterX,
-                kalmanFilterY,
-                handLandmarker,
-                isLogging = isLogging,
-                onToggleLogging = {
-                    isLogging = it
-                    if (!it) logManager.saveLog()
-                },
-                onOpenSettings = { currentScreen = "settings" },
-                lockedId = lockedId,
-                battery = batteryStatus,
-                onUnlock = { lockedId = null },
-                onTargetUpdate = { id -> lockedId = id }
-            ) { update ->
-                val seq = packetSeq++
-                udpSender.send(String.format(Locale.US, "EX:%.4f,EY:%.4f,SEQ:%d", update.errX, update.errY, seq))
-                if (isLogging) {
-                    logManager.log(
-                        frameTimestampNanos = update.frameTimestampNanos,
-                        seq = seq,
-                        detectionCount = update.detectionCount,
-                        rawX = update.rawX,
-                        rawY = update.rawY,
-                        filteredX = update.filteredX,
-                        filteredY = update.filteredY,
-                        velocityX = update.velocityX,
-                        velocityY = update.velocityY,
-                        dtSeconds = update.dtSeconds
                     )
                     delay(3000)
                     pct -= (0..1).random()
@@ -349,6 +355,7 @@ class MainActivity : ComponentActivity() {
                     onConnect = { ip, port ->
                         esp32Ip = ip
                         udpPort = port
+                        saveConnection(ip, port)
                         currentScreen = "camera"
                     },
                     onTest = { ip, port, msg ->
@@ -443,6 +450,13 @@ class MainActivity : ComponentActivity() {
      * header by LogManager.saveLog() so a saved log is self-describing about
      * which gains produced it. Called when logging is toggled ON.
      */
+    private fun saveConnection(ip: String, port: Int) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(PREF_ESP32_IP, ip)
+            .putInt(PREF_UDP_PORT, port)
+            .apply()
+    }
+
     private fun buildSessionMetadata(): Map<String, String> {
         val cfg = tripodConfig
         return linkedMapOf(
@@ -508,6 +522,9 @@ fun CameraPreviewScreen(
     onOpenExperiment: () -> Unit,
     lockedId: Int?,
     battery: BatteryStatus?,
+    detectionMode: DetectionMode,
+    onDetectionModeChange: (DetectionMode) -> Unit,
+    predictionHorizonSeconds: Float,
     onUnlock: () -> Unit,
     onTargetUpdate: (Int?) -> Unit,
     onTargetDetected: (MainActivity.TrackingUpdate) -> Unit
@@ -515,6 +532,15 @@ fun CameraPreviewScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val previewView = remember { PreviewView(context) }
+
+    // The analyzer lambda below is created once per camera bind, so reading the
+    // plain parameters there would freeze them at bind time (e.g. the mode toggle
+    // or a palm lock wouldn't reach the pipeline until the camera rebinds). These
+    // always hold the latest recomposed values.
+    val currentLandmarker by rememberUpdatedState(landmarker)
+    val currentLockedId by rememberUpdatedState(lockedId)
+    val currentDetectionMode by rememberUpdatedState(detectionMode)
+    val currentPredictionHorizon by rememberUpdatedState(predictionHorizonSeconds)
 
     var cameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_BACK_CAMERA) }
     var detectionResult by remember { mutableStateOf<MainActivity.DetectionResult?>(null) }
@@ -608,11 +634,11 @@ fun CameraPreviewScreen(
                     Icon(Icons.Default.Tune, contentDescription = "Experiment", tint = Color.White)
                 }
                 IconButton(onClick = {
-                    val next = if (detectionMode == DetectionMode.FACE) DetectionMode.OBJECT else DetectionMode.FACE
+                    val next = if (detectionMode == DetectionMode.FACE) DetectionMode.BALL else DetectionMode.FACE
                     onDetectionModeChange(next)
                 }) {
                     Icon(
-                        imageVector = if (detectionMode == DetectionMode.FACE) Icons.Default.Face else Icons.Default.Category,
+                        imageVector = if (detectionMode == DetectionMode.FACE) Icons.Default.Face else Icons.Default.SportsBaseball,
                         contentDescription = "Detection mode: ${detectionMode.name}",
                         tint = Color.White
                     )
@@ -718,14 +744,35 @@ fun CameraPreviewScreen(
                 .build()
             val faceDetector = FaceDetection.getClient(faceOptions)
 
-            // Generic "prominent object" detector (unlabeled -- no classification,
-            // same as ARCHITECTURE.md's original description) for DetectionMode.OBJECT,
-            // e.g. tracking a ball for the pendulum test in TESTING.md rather than a face.
-            val objectOptions = ObjectDetectorOptions.Builder()
-                .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
-                .enableMultipleObjects()
-                .build()
-            val objDetector = ObjectDetection.getClient(objectOptions)
+            // Ball detector for DetectionMode.BALL. Created lazily on the analysis
+            // executor the first time BALL mode sees a frame (model load is too slow
+            // for the main thread, and FACE-only sessions never pay for it), and only
+            // ever used and closed on that same thread.
+            var ballDetector: BallDetector? = null
+            // Set (on the executor) once this effect is torn down. A frame already
+            // queued for this effect's analyzer can still run after the close task,
+            // and calling detect() on a closed MediaPipe detector is a native
+            // SIGSEGV, not a catchable exception -- so never hand one out.
+            var ballDetectorClosed = false
+            val ballTracker = BallTracker()
+            val colorBallDetector = ColorBallDetector()
+            val getBallDetector: () -> BallDetector? = {
+                if (ballDetector == null && !ballDetectorClosed) {
+                    try {
+                        val options = BallDetector.ObjectDetectorOptions.builder()
+                            .setBaseOptions(BaseOptions.builder().setModelAssetPath(BALL_MODEL_ASSET).build())
+                            .setRunningMode(RunningMode.IMAGE)
+                            .setCategoryAllowlist(listOf(BALL_CATEGORY))
+                            .setScoreThreshold(BALL_SCORE_THRESHOLD)
+                            .setMaxResults(5)
+                            .build()
+                        ballDetector = BallDetector.createFromOptions(context, options)
+                    } catch (e: Exception) {
+                        Log.e("CamX", "Ball detector init failed: ${e.message}")
+                    }
+                }
+                ballDetector
+            }
 
             var frameCounter = 0
             var lostFrameCount = 0
@@ -739,15 +786,17 @@ fun CameraPreviewScreen(
                         frameCounter++
                         processImageProxy(
                             faceDetector,
-                            objDetector,
-                            detectionMode,
-                            landmarker,
+                            getBallDetector,
+                            colorBallDetector,
+                            ballTracker,
+                            currentDetectionMode,
+                            currentLandmarker,
                             imageProxy,
                             cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA,
                             kalmanFilterX,
                             kalmanFilterY,
-                            predictionHorizonSeconds,
-                            lockedId,
+                            currentPredictionHorizon,
+                            currentLockedId,
                             lostFrameCount,
                             // Skip the (expensive: JPEG round-trip + inference) hand
                             // landmark pass entirely once a target is locked -- its only
@@ -756,7 +805,7 @@ fun CameraPreviewScreen(
                             // running it while locked only steals executor time from
                             // the per-frame tracking pipeline and adds latency to the
                             // servo correction.
-                            frameCounter % 5 == 0 && lockedId == null,
+                            frameCounter % 5 == 0 && currentLockedId == null,
                             onTargetUpdate,
                             onLostFrameCountChanged = { lostFrameCount = it }
                         ) { update, result ->
@@ -793,87 +842,17 @@ fun CameraPreviewScreen(
             try {
                 awaitCancellation()
             } finally {
+                // Stop new frames reaching this effect's analyzer before closing the
+                // detectors it uses; the close runs on the executor, after any frame
+                // already in flight there.
+                imageAnalyzer.clearAnalyzer()
                 faceDetector.close()
-                objDetector.close()
+                executor.execute {
+                    ballDetectorClosed = true
+                    ballDetector?.close()
+                    ballDetector = null
+                }
             }
-        }
-    }
-}
-
-/**
- * Compact battery readout for the camera overlay: a fill-level glyph plus the
- * percentage and pack voltage from the tripod's INA219 fuel gauge. Colour tracks
- * charge (green > 50%, amber 20-50%, red < 20%). Until the first telemetry
- * packet arrives it shows a dim "no data" placeholder, so the feature is
- * visibly present even before the tripod is connected.
- */
-@Composable
-fun BatteryIndicator(battery: BatteryStatus?, modifier: Modifier = Modifier) {
-    val levelColor = when {
-        battery == null -> Color.White.copy(alpha = 0.5f)
-        battery.milliamps < -20 -> Color(0xFF4CAF50) // negative current => charging
-        battery.percent > 50 -> Color(0xFF4CAF50)
-        battery.percent > 20 -> Color(0xFFFFB300)
-        else -> Color(0xFFE53935)
-    }
-
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color.Black.copy(alpha = 0.45f))
-            .padding(horizontal = 8.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Canvas(modifier = Modifier.size(width = 26.dp, height = 13.dp)) {
-            val stroke = 1.5.dp.toPx()
-            val nubW = 2.dp.toPx()
-            val bodyW = size.width - nubW
-            val corner = CornerRadius(2.dp.toPx(), 2.dp.toPx())
-            val outline = if (battery == null) Color.White.copy(alpha = 0.5f) else Color.White
-
-            drawRoundRect(
-                color = outline,
-                topLeft = Offset(0f, 0f),
-                size = Size(bodyW, size.height),
-                cornerRadius = corner,
-                style = Stroke(width = stroke)
-            )
-            drawRoundRect(
-                color = outline,
-                topLeft = Offset(bodyW, size.height * 0.28f),
-                size = Size(nubW, size.height * 0.44f),
-                cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx())
-            )
-            if (battery != null) {
-                val pad = stroke + 1.dp.toPx()
-                val trackW = bodyW - 2 * pad
-                val fillW = (trackW * (battery.percent / 100f)).coerceIn(0f, trackW)
-                drawRoundRect(
-                    color = levelColor,
-                    topLeft = Offset(pad, pad),
-                    size = Size(fillW, size.height - 2 * pad),
-                    cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx())
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.width(6.dp))
-
-        Column {
-            Text(
-                text = if (battery != null) "${battery.percent}%" else "-- %",
-                color = if (battery != null) Color.White else Color.White.copy(alpha = 0.6f),
-                style = MaterialTheme.typography.labelLarge
-            )
-            Text(
-                text = if (battery != null) {
-                    String.format(Locale.US, "%.2f V", battery.millivolts / 1000f)
-                } else {
-                    "no tripod data"
-                },
-                color = Color.White.copy(alpha = 0.6f),
-                style = MaterialTheme.typography.labelSmall
-            )
         }
     }
 }
@@ -1009,8 +988,12 @@ fun ConnectionScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            Button(onClick = { onTest(ip, port.toIntOrNull() ?: 4210, testMessage) }) { Text("Test Connection") }
-            Button(onClick = { onConnect(ip, port.toIntOrNull() ?: 4210) }) { Text("Save & Connect") }
+            // Trim and range-check here so a stray space or bad port is never
+            // saved to preferences (and never reaches DatagramPacket).
+            val cleanIp = ip.trim()
+            val cleanPort = port.trim().toIntOrNull()?.takeIf { it in 1..65535 } ?: DEFAULT_UDP_PORT
+            Button(onClick = { onTest(cleanIp, cleanPort, testMessage) }, enabled = cleanIp.isNotEmpty()) { Text("Test Connection") }
+            Button(onClick = { onConnect(cleanIp, cleanPort) }, enabled = cleanIp.isNotEmpty()) { Text("Save & Connect") }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -1032,7 +1015,9 @@ fun ConnectionScreen(
 @OptIn(ExperimentalGetImage::class)
 private fun processImageProxy(
     faceDetector: FaceDetector,
-    objectDetector: ObjectDetector,
+    getBallDetector: () -> BallDetector?,
+    colorBallDetector: ColorBallDetector,
+    ballTracker: BallTracker,
     mode: DetectionMode,
     handLandmarker: HandLandmarker?,
     imageProxy: ImageProxy,
@@ -1063,14 +1048,18 @@ private fun processImageProxy(
         var palmY = 0f
         var handLandmarks: List<Offset> = emptyList()
 
+        // Upright RGB copy of the frame for the MediaPipe models (hand landmarker
+        // and ball detector). Lazy so it's built at most once per frame, and not
+        // at all on FACE-mode frames that skip the hand pass.
+        val uprightBitmap by lazy { imageProxy.toBitmapInternal(rotation) }
+
         // Only detect hands periodically to save resources and prevent crashes
         if (shouldDetectHands) {
             handLandmarker?.let { landmarker ->
                 try {
                     // Rotate to the same upright frame ML Kit uses, so palm
                     // coordinates and bounding-box coordinates are comparable.
-                    val bitmap = imageProxy.toBitmapInternal(rotation)
-                    val mpImage = BitmapImageBuilder(bitmap).build()
+                    val mpImage = BitmapImageBuilder(uprightBitmap).build()
                     val result = landmarker.detect(mpImage)
                     if (result.landmarks().isNotEmpty()) {
                         val hand = result.landmarks()[0]
@@ -1101,8 +1090,27 @@ private fun processImageProxy(
             DetectionMode.FACE -> faceDetector.process(image).continueWith { t ->
                 t.result.map { MainActivity.DetectedObjectInfo(it.boundingBox, it.trackingId) }
             }
-            DetectionMode.OBJECT -> objectDetector.process(image).continueWith { t ->
-                t.result.map { MainActivity.DetectedObjectInfo(it.boundingBox, it.trackingId) }
+            // Colour segmentation first: it finds the optic-yellow ball even through
+            // the net holding it, where the COCO model mostly misses. The MediaPipe
+            // model is only a fallback for frames with no yellow blob (e.g. a
+            // different-coloured ball). Both run synchronously here; the result is
+            // wrapped in a completed Task so it feeds the same listener chain as ML
+            // Kit. Boxes are in the upright bitmap's frame (same as ML Kit's), and
+            // IDs come from BallTracker.
+            DetectionMode.BALL -> try {
+                val boxes = colorBallDetector.detect(uprightBitmap).ifEmpty {
+                    val detector = getBallDetector() ?: throw IllegalStateException("Ball detector unavailable")
+                    detector.detect(BitmapImageBuilder(uprightBitmap).build()).detections().map { d ->
+                        val b = d.boundingBox()
+                        Rect(b.left.toInt(), b.top.toInt(), b.right.toInt(), b.bottom.toInt())
+                    }
+                }
+                Tasks.forResult(ballTracker.update(boxes).map { (box, id) ->
+                    MainActivity.DetectedObjectInfo(box, id, label = "Ball")
+                })
+            } catch (e: Exception) {
+                Log.e("CamX", "Ball detection error: ${e.message}")
+                Tasks.forException(e)
             }
         }
 
