@@ -17,14 +17,14 @@ The project follows a modular structure to separate concerns between the UI, the
 The core tracking algorithm is based on the recursive Bayesian estimation of the subject's center-pixel coordinates.
 
 ### 1. Object Detection (Perception)
-Subject detection runs one of two ML Kit pipelines, selectable per-session as `DetectionMode` (Experiment tab, or the camera-screen toggle icon; default `FACE`):
+Subject detection runs one of two pipelines, selectable per-session as `DetectionMode` (Experiment tab, or the camera-screen toggle icon; default `FACE`):
 
 - **`FACE`** (default): Google ML Kit Face Detection (`FaceDetectorOptions`, `PERFORMANCE_MODE_FAST`, `enableTracking()`). Locks onto faces only.
-- **`OBJECT`**: Google ML Kit Object Detection and Tracking (`ObjectDetectorOptions`, `STREAM_MODE`, `enableMultipleObjects()`, no classification). **This is a generic "prominent object" detector, not a person detector** -- ML Kit ships no person class and no classification is enabled here, so the tripod can lock onto any sufficiently prominent object in frame, not specifically a person (or face). Useful for subjects a face detector can't see, e.g. the pendulum test in `TESTING.md`.
+- **`BALL`**: first `ColorBallDetector.kt`, which segments optic-yellow (HSV hue 45-85 deg) pixels on a ~160-cell grid, dilates the mask to bridge net strands, and keeps round, well-filled blobs -- this is what finds the pendulum ball through the net it hangs in, where the COCO model mostly fails. Only on frames with no yellow blob does it fall back to the MediaPipe Tasks Object Detector (`RunningMode.IMAGE`) with the EfficientDet-Lite0 int8 COCO model (`assets/efficientdet_lite0.tflite`), restricted via `setCategoryAllowlist` to the COCO `sports ball` class at a 0.3 score threshold. Only balls are tracked -- other objects in frame are ignored. Used for the pendulum test in `TESTING.md`. MediaPipe's detector has no tracking IDs, so `BallTracker.kt` assigns them by nearest-centre association across frames (IDs survive up to 15 missed frames), which keeps the palm lock and coast-on-loss logic working unchanged. The detector is created lazily on the analysis executor the first time `BALL` mode runs.
 
-Both pipelines are mapped to a common `DetectedObjectInfo(boundingBox, trackingId)` shape in `processImageProxy` (`MainActivity.kt`) immediately on detection, so every downstream step -- target selection, hand-lock distance, the Kalman filter, the servo command -- is written once and works identically regardless of which detector produced it. `DetectedObjectInfo.label` stays the default `"Object"` in both modes (ML Kit provides no person class, and Object mode's classification is intentionally left off since nothing consumes it). Detected objects are reported as rectangular bounding boxes in the *upright* (post-rotation) image coordinate frame. Detection runs at 30Hz (every frame) for maximum responsiveness.
+Both pipelines are mapped to a common `DetectedObjectInfo(boundingBox, trackingId)` shape in `processImageProxy` (`MainActivity.kt`) immediately on detection, so every downstream step -- target selection, hand-lock distance, the Kalman filter, the servo command -- is written once and works identically regardless of which detector produced it. `DetectedObjectInfo.label` is `"Ball"` in `BALL` mode and the default `"Object"` in `FACE` mode (nothing downstream consumes it yet). Detected objects are reported as rectangular bounding boxes in the *upright* (post-rotation) image coordinate frame. Detection runs at 30Hz (every frame) for maximum responsiveness.
 
-A known follow-up (not yet implemented) is swapping `OBJECT` mode for MediaPipe's Object Detector with an EfficientDet-Lite COCO model filtered to the `person` class, or a Pose Landmarker, to constrain tracking to people specifically while still not requiring a visible face.
+The same MediaPipe detector could track people without a visible face by allowlisting the COCO `person` class instead of `sports ball` (not yet implemented).
 
 ### 2. Gesture Recognition (Locking)
 MediaPipe Hand Landmarker runs concurrently at 6Hz (every 5th frame) to identify hand keypoints, in `RunningMode.IMAGE`. This throttling ensures system stability and reduces thermal overhead on mobile hardware.
@@ -60,6 +60,29 @@ Data transmission to the ESP32 tripod is handled via UDP.
 - Rate: Commands are dispatched immediately following successful frame analysis, typically at 30Hz.
 - Sequencing: `SEQ` lets the firmware detect and drop out-of-order/duplicate packets, and lets you measure packet loss from the gaps in `Seq` in the logged CSV.
 - Firmware control: The ESP32 applies PID speed control in raw microseconds -- `pulse_us = NEUTRAL_US +/- clamp(KP*err + KI*integral, -MAX_SPEED_OFFSET_US, MAX_SPEED_OFFSET_US)` per axis (KD = 0 by design) -- so the commanded rotation speed scales with how far off-center the subject is, for continuous-rotation servos. The gains are derived from an integrator-plant model (loop delay sets the gain ceiling); see the header comment in `firmware/camx_tripod/camx_tripod.ino` and "Tuning the PID" in `firmware/README.md`.
+
+### Live Tuning (Experiment tab): `CFG` protocol
+
+The Experiment tab (Kotlin: `ExperimentScreen.kt`) tunes both controllers live against a
+running rig:
+
+- **PID gains** (`KP`/`KI`/`KD`/`MAX_SPEED_OFFSET_US`/`DEADZONE`) live on the firmware, so
+  they're set over the same UDP flow as the `EX`/`EY` packets: `CFG:KP:<v>,KI:<v>,KD:<v>,MS:<v>,DZ:<v>`
+  to set all five at once, or `CFG?` to query without changing anything. The firmware
+  always replies on the same flow with its full current gain set in the same format, which
+  the app parses into `UdpSender.onConfig` / `MainActivity.tripodConfig` and uses to re-seed
+  the Experiment tab's sliders. Gains are RAM-only on the firmware (reset to the `.ino`
+  defaults on reboot), same as the pre-existing Serial-tuning path. See "CFG protocol" in
+  `firmware/README.md` for the full spec.
+- **Kalman noise** (`measurementNoise`/`accelerationNoise`) and the **prediction horizon**
+  live entirely in the app, so the Experiment tab writes them straight into the running
+  `kalmanFilterX`/`kalmanFilterY` instances and `MainActivity.predictionHorizonSeconds` --
+  no network round-trip, no persistence (reset to the `DEFAULT_*` constants on app restart,
+  see "Known Limitations").
+
+### Auto-connect: `DISCOVER` / `TRIPOD`
+
+The tripod address set in Settings is saved to SharedPreferences. On top of that, while nothing has been heard from that address for 5 s, `MainActivity` has `UdpSender.discover()` broadcast `DISCOVER` every 2 s; the firmware answers `TRIPOD:<ip>` to the sender, and the app adopts and saves the reply's source address. See "Discovery" in `firmware/README.md`.
 
 ### Reverse channel: battery telemetry (firmware -> app)
 
@@ -98,9 +121,8 @@ Subject discovery is handled manually via the connection settings. The user spec
 
 ## Known Limitations / Suggested Follow-ups
 
-- **Generic object detector, not a person detector** (see above) -- highest-value fix for tracking correctness.
 - **Gesture recognition is a hand-rotation-sensitive heuristic**, not MediaPipe's built-in `GestureRecognizer` (`Open_Palm` category), and runs in `RunningMode.IMAGE` (blocking) rather than `RunningMode.LIVE_STREAM`.
-- **Settings (IP/port, Experiment-tab gains) are not persisted** across app restarts; no `ViewModel`/`DataStore` layer, so configuration and tracking state also don't survive a configuration change (e.g. rotation). The Experiment tab re-syncs PID gains from the firmware's `CFG` reply on open, so a reconnect after an app restart still recovers the tripod's actual live values -- only the local Kalman/prediction-horizon tuning is lost.
+- **Experiment-tab settings are not persisted** across app restarts (the tripod IP/port is -- SharedPreferences, plus auto-discovery); no `ViewModel`/`DataStore` layer, so configuration and tracking state also don't survive a configuration change (e.g. rotation). The Experiment tab re-syncs PID gains from the firmware's `CFG` reply on open, so a reconnect after an app restart still recovers the tripod's actual live values -- only the local Kalman/prediction-horizon tuning is lost.
 - **No automated evaluation harness.** The CSV schema above (now including `ErrX`/`ErrY`) and the Experiment tab's live tuning support one, but end-to-end latency, prediction-horizon sweep, ablation (raw vs. filtered vs. predicted RMSE), and packet-loss experiments still need to be run and reported by hand -- see `TESTING.md` for the suggested protocol.
 - **Camera-analysis resolution is not pinned** (no `ResolutionSelector` on `ImageAnalysis`); it varies by device. This no longer causes correctness bugs (the frame-geometry and normalized-protocol fixes above are resolution-agnostic), but it does mean absolute pixel jitter -- and therefore the tuned `KalmanFilter` noise constants -- may vary by device.
 
@@ -114,8 +136,8 @@ CamX is a motorized camera that can autonomously detect, lock onto, and record p
 ## Dependencies
 
 - Android Jetpack CameraX (v1.4.1)
-- Google ML Kit Face Detection + Object Detection (`DetectionMode.FACE` / `.OBJECT`)
-- MediaPipe Tasks Vision (v0.10.14)
+- Google ML Kit Face Detection (`DetectionMode.FACE`)
+- MediaPipe Tasks Vision (v0.10.14) -- Hand Landmarker (lock gesture) and Object Detector (`DetectionMode.BALL`)
 - Android Jetpack Compose (Material 3)
 - Kotlin Coroutines for asynchronous processing
 - Firmware: Adafruit INA219 + Adafruit BusIO (battery monitoring), ESP32Servo

@@ -77,6 +77,66 @@ The firmware applies PID speed control in raw microseconds:
 per axis, so rotation speed scales with how far off-center the subject is. When `|error|`
 is within `DEADZONE`, the firmware writes `NEUTRAL_US` (stop) instead of a speed offset.
 
+That PID output is a *target*: the pulse actually written ramps toward it at no more than
+`MAX_SLEW_US_PER_S` (default 1000 us/s), so speed changes and direction reversals are
+gradual instead of instant. The failsafe and divergence-guard stops skip the ramp.
+
+### Power-safety limits and disconnect diagnosis
+
+The servos share the 5 V regulator with the ESP32-C6. A servo slammed from full speed one
+way to full speed the other is close to a stall and pulls a large current spike. Very high
+gains do exactly that on noisy vision error, and the rail sag can brown out the C6 or drop
+its WiFi. The LED stays lit through this, because `setup()` turns it on right after the
+reboot. The firmware guards against it in two ways:
+
+- **Slew limit** (`MAX_SLEW_US_PER_S`, see above).
+- **Gain caps**, applied to both Serial and `CFG` updates: `KP <= 200`, `KI <= 100`,
+  `KD <= 20`, `10 <= MS <= 400`, `DZ <= 0.5`. Out-of-range values are clamped, and the `CFG`
+  reply reports the clamped values. The Experiment tab's sliders use the same maxima.
+
+To diagnose a disconnect:
+
+- At boot the Serial log prints `Reset reason: ...`. After a **brownout**, the LED also
+  blinks red three times. If you have no Serial connection, press "Sync from Tripod" after
+  a disconnect: gains back at the compiled defaults mean the board rebooted.
+- WiFi drops are logged with the reason code, e.g.
+  `WiFi DISCONNECTED, reason 200 (BEACON_TIMEOUT), RSSI was -78 dBm`. Modem power-save
+  is off (`WiFi.setSleep(false)`). If the core's auto-reconnect hasn't recovered after
+  `WIFI_RECONNECT_INTERVAL_MS` (10 s), the firmware forces a reconnect.
+- Brownouts are a hardware problem that the limits only mask. Put 470-1000 uF across the
+  servo 5 V rail near the servos, or power the servos from their own regulator with a
+  common ground.
+
+### CFG protocol: live PID tuning from the app's Experiment tab (app <-> firmware)
+
+Same `KEY:value` convention as `EX`/`EY` and `BATT`, on the same UDP flow:
+
+- **Set**, app -> firmware: `CFG:KP:110.00,KI:50.00,KD:5.00,MS:220.0,DZ:0.030` -- all five
+  gains together (the app always sends its full current set). Applying a set also zeroes
+  `panIntegral`/`tiltIntegral`, same as the Serial `KI<v>` handler.
+- **Query**, app -> firmware: `CFG?` -- returns the current gains without changing anything
+  (used by the Experiment tab's "Sync from Tripod").
+- **Reply**, firmware -> app: same format as the set message, sent immediately (not
+  rate-limited like `BATT`) after handling either a set or a query, so the app's sliders
+  always reflect what the firmware actually has -- including gains changed over Serial.
+
+Gains set this way are RAM-only, same as the Serial path below -- they reset to the
+defaults in `camx_tripod.ino` on reboot.
+
+### Discovery: auto-connect (app <-> firmware)
+
+- **Probe**, app -> broadcast: `DISCOVER`, sent to 255.255.255.255 and each network's
+  directed broadcast (e.g. 10.47.140.255) on the tripod port, every 2 s while the app has
+  heard nothing from its current tripod address for 5 s.
+- **Announce**, firmware -> app: `TRIPOD:<tripod IP>`, sent straight back to the probing
+  socket. The app adopts the reply's *source* address, saves it (SharedPreferences), and
+  shows a "Tripod found at ..." toast. `DISCOVER` is handled per packet in the receive
+  loop, so it's never dropped behind tracking packets.
+
+This is request/reply rather than the tripod broadcasting unprompted because Android
+(Samsung especially) filters incoming broadcasts unless the app holds a multicast lock,
+while a unicast reply to a socket the app sent from always arrives.
+
 ### Battery telemetry (firmware -> app)
 
 Roughly every 2s, and only after it has received at least one `EX/EY` packet, the firmware
@@ -155,7 +215,7 @@ look-ahead already removes), so the **shipped defaults are `KP = 110`, `KI = 50`
 Monitor (115200 baud), no reflash -- so tune on the running rig:
 
 ```
-KP120     set KP = 120
+KP120     set KP = 120   (KP/KI/KD/MS/DZ are clamped to the power-safety caps above)
 KI70      set KI = 70   (also zeroes the integrators)
 KD0       set KD
 MS160     set MAX_SPEED_OFFSET_US = 160
