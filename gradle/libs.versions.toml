@@ -9,7 +9,6 @@ activityCompose = "1.8.0"
 kotlin = "2.2.10"
 composeBom = "2026.02.01"
 camerax = "1.4.1"
-mlkit-object-detection = "17.0.2"
 mediapipe-tasks-vision = "0.10.14"
 
 [libraries]
@@ -35,7 +34,6 @@ androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", 
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 androidx-camera-video = { group = "androidx.camera", name = "camera-video", version.ref = "camerax" }
-google-mlkit-objectdetection = { group = "com.google.mlkit", name = "object-detection", version.ref = "mlkit-object-detection" }
 mediapipe-tasks-vision = { group = "com.google.mediapipe", name = "tasks-vision", version.ref = "mediapipe-tasks-vision" }
 
 [plugins]
