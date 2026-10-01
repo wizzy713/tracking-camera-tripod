@@ -153,7 +153,7 @@ const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulate
 // The SATURATION_* guard below will stop the motors (not spin forever) if this
 // is still wrong, but fix the sign -- don't rely on the guard.
 const int PAN_DIR  = -1;
-const int TILT_DIR = +1;
+const int TILT_DIR = -1;   // was +1; flipped 2026-10-01 after tilt went the wrong way on both cameras
 
 // Divergence guard. A correctly-wired loop pulls |error| back toward 0. If
 // |error| instead stays pinned at the frame edge for this long, the loop is
