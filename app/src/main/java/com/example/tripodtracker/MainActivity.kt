@@ -1102,11 +1102,11 @@ private fun processImageProxy(
                     val detector = getBallDetector() ?: throw IllegalStateException("Ball detector unavailable")
                     detector.detect(BitmapImageBuilder(uprightBitmap).build()).detections().map { d ->
                         val b = d.boundingBox()
-                        Rect(b.left.toInt(), b.top.toInt(), b.right.toInt(), b.bottom.toInt())
+                        BallBox(b.left.toInt(), b.top.toInt(), b.right.toInt(), b.bottom.toInt())
                     }
                 }
                 Tasks.forResult(ballTracker.update(boxes).map { (box, id) ->
-                    MainActivity.DetectedObjectInfo(box, id, label = "Ball")
+                    MainActivity.DetectedObjectInfo(Rect(box.left, box.top, box.right, box.bottom), id, label = "Ball")
                 })
             } catch (e: Exception) {
                 Log.e("CamX", "Ball detection error: ${e.message}")
