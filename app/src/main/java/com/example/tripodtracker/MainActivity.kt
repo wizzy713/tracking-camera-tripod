@@ -1209,12 +1209,13 @@ private fun processImageProxy(
                 errX = errX.coerceIn(-1f, 1f)
                 var errY = ((predictedY - frameHeight / 2f) / (frameHeight / 2f)).coerceIn(-1f, 1f)
 
-                // Tilt sign, verified on the rig: the back camera needs the analysis
-                // frame's Y flipped and the front camera (which faces the other way,
-                // so the same tilt moves its view the opposite way) needs it as-is.
-                // Both were previously the other way round, which drove tilt away
+                // Tilt sign, verified on the rig (phone in portrait): the back camera
+                // sends the frame's Y error as-is (positive = subject below centre,
+                // the firmware's convention) and the front camera, which faces the
+                // other way so the same tilt moves its view the opposite way, needs
+                // it negated. Commit 2d9c997 swapped these and tilt then drove away
                 // from the subject on both cameras.
-                if (!isFrontCamera) {
+                if (isFrontCamera) {
                     errY = -errY
                 }
 
