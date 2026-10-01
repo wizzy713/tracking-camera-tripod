@@ -1208,8 +1208,13 @@ private fun processImageProxy(
                 var errX = (predictedX - frameWidth / 2f) / (frameWidth / 2f)
                 errX = errX.coerceIn(-1f, 1f)
                 var errY = ((predictedY - frameHeight / 2f) / (frameHeight / 2f)).coerceIn(-1f, 1f)
-                
-                if (isFrontCamera) {
+
+                // Tilt sign, verified on the rig: the back camera needs the analysis
+                // frame's Y flipped and the front camera (which faces the other way,
+                // so the same tilt moves its view the opposite way) needs it as-is.
+                // Both were previously the other way round, which drove tilt away
+                // from the subject on both cameras.
+                if (!isFrontCamera) {
                     errY = -errY
                 }
 
