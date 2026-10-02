@@ -420,6 +420,23 @@ void loop() {
 
     memcpy(latestPacket, packetBuffer, len + 1);
     latestLen = len;
+
+    // Remember who is talking to us so battery telemetry can go back on the
+    // same flow (the app receives on the socket it sends from).
+    appIP = udp.remoteIP();
+    appPort = udp.remotePort();
+    haveApp = true;
+
+    // Discovery: the app broadcasts "DISCOVER" when it can't hear us, and we
+    // answer it directly so it learns our IP. Handled per packet (not via
+    // latestPacket) so a probe mixed in with tracking packets is never dropped.
+    if (strncmp(packetBuffer, "DISCOVER", 8) == 0) {
+      announceTripod();
+      continue;
+    }
+
+    memcpy(latestPacket, packetBuffer, len + 1);
+    latestLen = len;
   }
 
   if (latestLen > 0) {

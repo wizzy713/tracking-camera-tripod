@@ -443,6 +443,140 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+
+        val onToggleLogging: (Boolean) -> Unit = {
+            isLogging = it
+            if (it) logManager.startSession(buildSessionMetadata()) else logManager.saveLog()
+        }
+
+        when (currentScreen) {
+            "settings" -> {
+                BackHandler { currentScreen = "camera" }
+                ConnectionScreen(
+                    currentIp = esp32Ip,
+                    currentPort = udpPort,
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    onConnect = { ip, port ->
+                        esp32Ip = ip
+                        udpPort = port
+                        saveConnection(ip, port)
+                        currentScreen = "camera"
+                    },
+                    onTest = { ip, port, msg ->
+                        udpSender.updateTarget(ip, port)
+                        udpSender.send(msg)
+                        Toast.makeText(this, "Test packet sent to $ip", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+            "experiment" -> {
+                BackHandler { currentScreen = "camera" }
+                ExperimentScreen(
+                    tripodConfig = tripodConfig,
+                    onApplyPid = { config ->
+                        udpSender.send(
+                            String.format(
+                                Locale.US,
+                                "CFG:KP:%.2f,KI:%.2f,KD:%.2f,MS:%.1f,DZ:%.3f",
+                                config.kp, config.ki, config.kd, config.maxSpeedOffsetUs, config.deadzone
+                            )
+                        )
+                    },
+                    onSyncFromTripod = { udpSender.send("CFG?") },
+                    kalmanFilterX = kalmanFilterX,
+                    kalmanFilterY = kalmanFilterY,
+                    predictionHorizonSeconds = predictionHorizonSeconds,
+                    onPredictionHorizonChange = { predictionHorizonSeconds = it },
+                    detectionMode = detectionMode,
+                    onDetectionModeChange = { mode ->
+                        detectionMode = mode
+                        lockedId = null
+                        kalmanFilterX.reset()
+                        kalmanFilterY.reset()
+                    },
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    testName = testName,
+                    onTestNameChange = { testName = it },
+                    testNotes = testNotes,
+                    onTestNotesChange = { testNotes = it },
+                    onBack = { currentScreen = "camera" }
+                )
+            }
+            else -> {
+                CameraPreviewScreen(
+                    cameraExecutor,
+                    kalmanFilterX,
+                    kalmanFilterY,
+                    handLandmarker,
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    onOpenSettings = { currentScreen = "settings" },
+                    onOpenExperiment = { currentScreen = "experiment" },
+                    lockedId = lockedId,
+                    battery = batteryStatus,
+                    detectionMode = detectionMode,
+                    onDetectionModeChange = { mode ->
+                        detectionMode = mode
+                        lockedId = null
+                        kalmanFilterX.reset()
+                        kalmanFilterY.reset()
+                    },
+                    predictionHorizonSeconds = predictionHorizonSeconds,
+                    onUnlock = { lockedId = null },
+                    onTargetUpdate = { id -> lockedId = id }
+                ) { update ->
+                    val seq = packetSeq++
+                    udpSender.send(String.format(Locale.US, "EX:%.4f,EY:%.4f,SEQ:%d", update.errX, update.errY, seq))
+                    if (isLogging) {
+                        logManager.log(
+                            frameTimestampNanos = update.frameTimestampNanos,
+                            seq = seq,
+                            detectionCount = update.detectionCount,
+                            rawX = update.rawX,
+                            rawY = update.rawY,
+                            filteredX = update.filteredX,
+                            filteredY = update.filteredY,
+                            velocityX = update.velocityX,
+                            velocityY = update.velocityY,
+                            dtSeconds = update.dtSeconds,
+                            errX = update.errX,
+                            errY = update.errY
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Snapshot of every tunable in effect right now, written as a CSV comment
+     * header by LogManager.saveLog() so a saved log is self-describing about
+     * which gains produced it. Called when logging is toggled ON.
+     */
+    private fun saveConnection(ip: String, port: Int) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(PREF_ESP32_IP, ip)
+            .putInt(PREF_UDP_PORT, port)
+            .apply()
+    }
+
+    private fun buildSessionMetadata(): Map<String, String> {
+        val cfg = tripodConfig
+        return linkedMapOf(
+            "test_name" to testName.ifBlank { "(unnamed)" },
+            "test_notes" to testNotes,
+            "detection_mode" to detectionMode.name,
+            "prediction_horizon_s" to predictionHorizonSeconds.toString(),
+            "kalman_measurement_noise" to kalmanFilterX.measurementNoise.toString(),
+            "kalman_acceleration_noise" to kalmanFilterX.accelerationNoise.toString(),
+            "tripod_kp" to (cfg?.kp?.toString() ?: "unknown (not synced)"),
+            "tripod_ki" to (cfg?.ki?.toString() ?: "unknown (not synced)"),
+            "tripod_kd" to (cfg?.kd?.toString() ?: "unknown (not synced)"),
+            "tripod_max_speed_offset_us" to (cfg?.maxSpeedOffsetUs?.toString() ?: "unknown (not synced)"),
+            "tripod_deadzone" to (cfg?.deadzone?.toString() ?: "unknown (not synced)")
+        )
     }
 
     /**
