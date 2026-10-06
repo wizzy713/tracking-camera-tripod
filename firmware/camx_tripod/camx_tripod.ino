@@ -83,58 +83,60 @@ const int TILT_PIN = 3;
 const int PAN_NEUTRAL_US  = 1500;
 const int TILT_NEUTRAL_US = 1500;
 
-// --- PID gains: model-based, not hand-tuned ---
+// --- PID gains: measured on the rig, 2026-10-06 ---
 //
-// Plant: servo pulse offset u (us) -> camera angular rate w = Ks*u, and the
-// app's error e = angle / half-FOV, so  de/dt = -(Ks/half_FOV) * u.  That is a
-// PURE INTEGRATOR, E(s)/U(s) = -Kg/s with Kg = Ks/half_FOV. For an integrator
-// the loop delay L is the only thing that caps the gain (phase margin):
+// The first gains (KP 110, KI 50, KD 5) came from a model that assumed a linear
+// servo (camera rate = Ks * pulse offset) and a loop delay of 0.15 s. The
+// pendulum calibration of 2026-10-06 (Tests/calibration.m) measured neither to
+// be true, with a still ball and a fixed pulse (KP 0, DEADZONE 0, so the output
+// is +-MIN_OFFSET_US and the camera rocks across the ball):
 //
-//   w_c = KP * Kg           (crossover freq = loop gain)
-//   PM  = 90deg - w_c*L*(180/pi) - (~10deg from the integral term)
-//   KP  = w_c / Kg = w_c * half_FOV / Ks
-//   KI  = (w_c / 6) * KP    (integral zero one hexave below crossover)
-//   KD  = 0                 (integrator plant needs no D; vision jitter + the
-//                            app-side Kalman already supply the lead term)
+//   * Dead band: the pan servo does not move for pulses within ~51-52 us of
+//     neutral (52 us: 0.06 / 0.17 half-frames/s in the two directions; the
+//     tilt servo not at all).
+//   * Steep beyond it: 60 us already gives ~1.2 half-frames/s (about
+//     0.14 half-frames/s per us), so the whole useful speed range is ~8 us wide.
+//   * Loop delay 0.42 s from ball crossing centre to camera reversing: 0.14 s
+//     in the app's Kalman filter at its old settings (R 100, sigma_a 150),
+//     ~0.11 s ramping the pulse across the dead band at MAX_SLEW_US_PER_S, and
+//     ~0.17 s camera + network + servo.
 //
-// Inputs (ESTIMATES -- see firmware/README.md "Tuning the PID" for how to
-// measure each on your rig, then recompute):
-//   Ks       ~= 1.8 deg/s per us   (FS90R-class @ 5V, ~100 RPM no-load, derated
-//                                   ~40% for head load; plausible 1.2 - 3.0)
-//   half_FOV ~= 26 deg pan, 33 deg tilt   (phone main camera, portrait)
-//   L        ~= 0.15 s   (~0.10 s vision+net pipeline + T/2 at 30 Hz + ~50 ms
-//                         servo internal speed-loop lag)
-//   PM target 50 deg  ->  w_c ~= 3.5 rad/s  (~0.56 Hz BW, ~0.8 s settle)
+// So a plain PID either did nothing (KP*error inside the dead band) or, once
+// KP was high enough to leave it, swept the whole speed range on a small error
+// and hunted. The loop that works is: MIN_OFFSET_US at the edge of the dead
+// band, a low KP for the narrow range beyond it, the filter lag removed in the
+// app (R 5, sigma_a 300) and a 0.20 s prediction horizon for the rest of the
+// delay. Three pendulum runs at these values (R14-R16) gave an offset RMS of
+// 0.17 with the ball in the central third of the frame 96% of the time,
+// against 0.24 and 80% for a camera that did not move.
 //
-// -> KP_pan ~= 50, KP_tilt ~= 64;  KI ~= (w_c/6)*KP ~= 30..37.  One shared
-// pair covers both axes within the modeling error.
-//
-// The defaults below sit a bit above the PM-50 point (w_c ~= 5-6 rad/s): the
-// L ~= 0.15 s estimate is deliberately pessimistic (it double-counts delay the
-// app-side Kalman look-ahead already cancels), so the conservative gains felt
-// sluggish on the bench -- bumped again (85->110 / 50->65, same KI/KP ratio)
-// for the same reason, still UNVERIFIED on hardware past the first bump.
-// KP/KI/KD/MAX_SPEED_OFFSET_US are RUNTIME-TUNABLE over Serial -- send
-// "KP120", "KI70", "KD0", "MS160" (see handleCalibrationInput) to dial in
-// responsiveness without reflashing, then copy the values you like back
-// here. Raise KP until the camera just starts to overshoot/hunt, then back
-// off ~30%. If tilt lags pan (gravity), it needs the higher end. The
-// SATURATION_* guard below catches a fully diverging loop (wrong sign, or
+// KI and KD are 0: neither was needed to meet the targets on the pendulum, and
+// they have not been tuned. All of these are RUNTIME-TUNABLE over Serial
+// ("KP18", "MO52", ... see handleCalibrationInput) and from the app's
+// Experiment tab, so re-tune on the running rig and copy the values back here.
+// The SATURATION_* guard below catches a fully diverging loop (wrong sign, or
 // the servo can't keep up at all) but NOT gain-induced oscillation around a
-// correctly-centred target -- watch for hunting/buzzing on first power-up
-// and back KP off if you see it.
+// correctly-centred target -- watch for hunting on first power-up.
 float DEADZONE = 0.03f;                   // Normalized error for full stop. ~2.5 sigma of the app's
                                           // Kalman-filtered position jitter (~0.013 normalized).
                                           // RUNTIME-TUNABLE like KP/KI/KD/MS -- see handleCalibrationInput
                                           // (Serial "DZ<v>") and handleConfigPacket (UDP "CFG:...").
-float KP = 110.0f;                        // Proportional gain: pulse offset (us) per unit of normalized error
-float KI = 50.0f;                         // Integral gain (us per unit-error-second): cancels steady bias/creep. Set to 0 to disable.
-float KD = 5.0f;                          // Derivative gain: kept at 0 by design (see model above). Only raise, in
+float MIN_OFFSET_US = 52.0f;              // Servo dead-band compensation (us), set to the measured edge of the
+                                          // dead band (see above). Without this, any
+                                          // KP*error below that does nothing, so low gains never move the camera
+                                          // and the first gain that does is already high enough to hunt. Outside
+                                          // DEADZONE this is added to the PID output in the direction of the
+                                          // error, so the command starts just inside the dead band and KP only has
+                                          // to supply the rest. Do not go ABOVE the dead band: the servo could
+                                          // then never command a slow speed and would chatter around the deadzone.
+                                          // RUNTIME-TUNABLE: Serial "MO<v>", UDP "CFG:...,MO:<v>". 0 disables.
+float KP = 18.0f;                         // Proportional gain: pulse offset (us) per unit of normalized error
+float KI = 0.0f;                          // Integral gain (us per unit-error-second): cancels steady bias/creep. 0 = disabled (not tuned).
+float KD = 0.0f;                          // Derivative gain: 0 (not tuned; the prediction horizon supplies the lead). Only raise, in
                                           // small steps, if overshoot/oscillation remains after KP and KI are set --
                                           // if it makes things jerkier that is noise amplification; back it off.
-float MAX_SPEED_OFFSET_US = 220.0f;       // Max offset from NEUTRAL (us) ~= 250 deg/s camera slew. The P term alone
-                                          // maxes at KP*1 = 110 us, so control stays linear across the whole frame
-                                          // and this clamp only bounds integral windup + fast-subject transients.
+float MAX_SPEED_OFFSET_US = 300.0f;       // Max offset from NEUTRAL (us). MIN_OFFSET_US + KP*1 = 70 us at the
+                                          // defaults, so this clamp only bounds integral windup if KI is raised.
 const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulated integral (unit-error-seconds): ~50 us
                                           // of bias authority at KI above, enough for neutral mistrim + tilt gravity.
 
@@ -153,7 +155,12 @@ const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulate
 // The SATURATION_* guard below will stop the motors (not spin forever) if this
 // is still wrong, but fix the sign -- don't rely on the guard.
 const int PAN_DIR  = -1;
-const int TILT_DIR = -1;   // was +1; flipped 2026-10-01 after tilt went the wrong way on both cameras
+int TILT_DIR = +1;         // Flipped to -1 on 2026-10-01, back to +1 on 2026-10-06: until the servo
+                           // dead-band compensation (MIN_OFFSET_US) went in, the tilt servo rarely
+                           // got a pulse big enough to move, so its direction was never properly
+                           // tested. With compensation at 45 us it moved, and -1 drove it AWAY from
+                           // the ball. RUNTIME-TUNABLE so a wrong guess needs no reflash: Serial
+                           // "TD1" / "TD-1", UDP "CFG:...,TD:<1|-1>" (not kept across a reboot).
 
 // Divergence guard. A correctly-wired loop pulls |error| back toward 0. If
 // |error| instead stays pinned at the frame edge for this long, the loop is
@@ -181,7 +188,9 @@ const unsigned long SIGNAL_TIMEOUT_MS = 500;
 //    +400 -> -400 reversal in ~0.8 s. Lower it if brownouts persist; raise it
 //    if tracking feels laggy on a solid power supply. Failsafe/divergence
 //    stops bypass it (they must stop immediately).
-const float MAX_SLEW_US_PER_S = 1000.0f;
+float MAX_SLEW_US_PER_S = 1000.0f;   // RUNTIME-TUNABLE: Serial "SL<v>", UDP "CFG:...,SL:<v>" (500..20000).
+                                     // Measured 2026-10-06: at 1000 us/s a reversal across the servo dead
+                                     // band (+52 to -52 us) takes ~0.1 s, a quarter of the total loop delay.
 // Cap on the dt used for the slew step, so a long gap between packets can't
 // be spent as one big jump.
 const float MAX_SLEW_DT_S = 0.1f;
@@ -196,6 +205,9 @@ const float KD_LIMIT = 20.0f;
 const float MS_MIN   = 10.0f;
 const float MS_LIMIT = 400.0f;
 const float DZ_LIMIT = 0.5f;
+const float MO_LIMIT = 80.0f;
+const float SL_MIN   = 500.0f;
+const float SL_LIMIT = 20000.0f;
 
 // --- WiFi resilience ---
 // If still disconnected this long after a drop, force a reconnect in case the
@@ -491,6 +503,9 @@ void loop() {
  *   KP<v> KI<v> KD<v>   PID gains
  *   MS<v>              MAX_SPEED_OFFSET_US (clamped 10..400)
  *   DZ<v>              DEADZONE (clamped 0..0.5)
+ *   MO<v>              MIN_OFFSET_US, servo dead-band compensation (clamped 0..80)
+ *   TD<1|-1>           TILT_DIR, tilt servo direction
+ *   SL<v>              MAX_SLEW_US_PER_S, pulse ramp limit (clamped 500..20000)
  *   ?                  print current values
  *
  * The same five gains (KP/KI/KD/MS/DZ) are also live-tunable over UDP from the
@@ -516,6 +531,9 @@ void handleCalibrationInput() {
   if (cmd.startsWith("KI")) { KI = constrain(cmd.substring(2).toFloat(), 0.0f, KI_LIMIT); panIntegral = tiltIntegral = 0.0f; Serial.printf("KI = %.2f (max %.0f, integrators reset)\n", KI, KI_LIMIT); return; }
   if (cmd.startsWith("KD")) { KD = constrain(cmd.substring(2).toFloat(), 0.0f, KD_LIMIT); Serial.printf("KD = %.2f (max %.0f)\n", KD, KD_LIMIT); return; }
   if (cmd.startsWith("MS")) { MAX_SPEED_OFFSET_US = constrain(cmd.substring(2).toFloat(), MS_MIN, MS_LIMIT); Serial.printf("MAX_SPEED_OFFSET_US = %.0f\n", MAX_SPEED_OFFSET_US); return; }
+  if (cmd.startsWith("MO")) { MIN_OFFSET_US = constrain(cmd.substring(2).toFloat(), 0.0f, MO_LIMIT); Serial.printf("MIN_OFFSET_US = %.0f\n", MIN_OFFSET_US); return; }
+  if (cmd.startsWith("SL")) { MAX_SLEW_US_PER_S = constrain(cmd.substring(2).toFloat(), SL_MIN, SL_LIMIT); Serial.printf("MAX_SLEW_US_PER_S = %.0f\n", MAX_SLEW_US_PER_S); return; }
+  if (cmd.startsWith("TD")) { TILT_DIR = (cmd.substring(2).toFloat() < 0.0f) ? -1 : +1; Serial.printf("TILT_DIR = %d\n", TILT_DIR); return; }
   if (cmd.startsWith("DZ")) { DEADZONE = constrain(cmd.substring(2).toFloat(), 0.0f, DZ_LIMIT); Serial.printf("DEADZONE = %.3f\n", DEADZONE); return; }
 
   if (line.length() < 2) return;
@@ -534,8 +552,8 @@ void handleCalibrationInput() {
 }
 
 void printControlValues() {
-  Serial.printf("KP=%.2f  KI=%.2f  KD=%.2f  MAX_SPEED_OFFSET_US=%.0f  DEADZONE=%.3f\n",
-                KP, KI, KD, MAX_SPEED_OFFSET_US, DEADZONE);
+  Serial.printf("KP=%.2f  KI=%.2f  KD=%.2f  MAX_SPEED_OFFSET_US=%.0f  DEADZONE=%.3f  MIN_OFFSET_US=%.0f\n",
+                KP, KI, KD, MAX_SPEED_OFFSET_US, DEADZONE, MIN_OFFSET_US);
 }
 
 void printBatteryStatus() {
@@ -721,6 +739,9 @@ void handleConfigPacket(const String &payload) {
     KD = constrain(parseKV(payload, "KD", KD), 0.0f, KD_LIMIT);
     MAX_SPEED_OFFSET_US = constrain(parseKV(payload, "MS", MAX_SPEED_OFFSET_US), MS_MIN, MS_LIMIT);
     DEADZONE = constrain(parseKV(payload, "DZ", DEADZONE), 0.0f, DZ_LIMIT);
+    MIN_OFFSET_US = constrain(parseKV(payload, "MO", MIN_OFFSET_US), 0.0f, MO_LIMIT);
+    TILT_DIR = (parseKV(payload, "TD", TILT_DIR) < 0.0f) ? -1 : +1;
+    MAX_SLEW_US_PER_S = constrain(parseKV(payload, "SL", MAX_SLEW_US_PER_S), SL_MIN, SL_LIMIT);
     panIntegral = 0.0f;
     tiltIntegral = 0.0f;
     Serial.print("Config updated via UDP: ");
@@ -753,8 +774,8 @@ void announceTripod() {
 void sendConfigTelemetry() {
   if (!haveApp) return;
   char msg[128];
-  int len = snprintf(msg, sizeof(msg), "CFG:KP:%.2f,KI:%.2f,KD:%.2f,MS:%.1f,DZ:%.3f",
-                     KP, KI, KD, MAX_SPEED_OFFSET_US, DEADZONE);
+  int len = snprintf(msg, sizeof(msg), "CFG:KP:%.2f,KI:%.2f,KD:%.2f,MS:%.1f,DZ:%.3f,MO:%.1f,TD:%d,SL:%.0f",
+                     KP, KI, KD, MAX_SPEED_OFFSET_US, DEADZONE, MIN_OFFSET_US, TILT_DIR, MAX_SLEW_US_PER_S);
   if (len <= 0) return;
   udp.beginPacket(appIP, appPort);
   udp.write((const uint8_t *) msg, len);
@@ -781,6 +802,7 @@ float computeAxisPID(float error, float &integral, float &lastError, float dt) {
   lastError = error;
 
   float output = KP * error + KI * integral + KD * derivative;
+  output += (error > 0.0f) ? MIN_OFFSET_US : -MIN_OFFSET_US;   // servo dead-band compensation
   return constrain(output, -MAX_SPEED_OFFSET_US, MAX_SPEED_OFFSET_US);
 }
 

@@ -1,7 +1,12 @@
 package com.example.tripodtracker
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Rect
@@ -69,9 +74,10 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.math.hypot
 
-// How far ahead the Kalman filter predicts, in seconds, to compensate for
-// motor + network latency. This is a placeholder -- measure real end-to-end
-// latency (LED-flash + high-speed-camera test) and replace this with that value.
+// How far ahead the Kalman filter predicts, in seconds, to compensate for the
+// loop delay. Tuned on the pendulum rig (2026-10-06): 0.20 s tracked as well as
+// 0.25 s with fewer commands pointing the wrong way (8% against 9-11%); 0.35 s
+// overshot the turning points (17%).
 // Live-tunable from the Experiment tab (MainActivity.predictionHorizonSeconds);
 // this is just the value it starts at.
 private const val DEFAULT_PREDICTION_HORIZON_SECONDS = 0.2f
@@ -81,13 +87,17 @@ private const val DEFAULT_PREDICTION_HORIZON_SECONDS = 0.2f
  * existing ML Kit face-lock behavior. BALL finds an optic-yellow tennis ball by
  * colour (ColorBallDetector, robust to a net around it), falling back to
  * MediaPipe's Object Detector with an EfficientDet-Lite0 COCO model filtered to
- * the "sports ball" class, so only balls are tracked -- e.g. for the pendulum test in TESTING.md. Selectable from
- * the Experiment tab or the camera-screen toggle icon.
+ * the "sports ball" class, so only balls are tracked -- e.g. for the pendulum test in TESTING.md. BODY uses
+ * the same COCO model filtered to the "person" class, so the box (and the aim
+ * point) covers the whole body rather than just the face, and keeps tracking
+ * when the subject turns away. Selectable from the Experiment tab or the
+ * camera-screen toggle icon.
  */
-enum class DetectionMode { FACE, BALL }
+enum class DetectionMode { FACE, BODY, BALL }
 
 // Tripod address persistence (Settings screen -> SharedPreferences).
 private const val PREFS_NAME = "tripod_connection"
+private const val TUNE_PREFS = "tune_hook"
 private const val PREF_ESP32_IP = "esp32_ip"
 private const val PREF_UDP_PORT = "udp_port"
 private const val DEFAULT_ESP32_IP = "10.47.140.33"
@@ -103,6 +113,18 @@ private const val BALL_CATEGORY = "sports ball"
 // Balls are small and often motion-blurred at the bottom of a swing, so this is
 // lower than MediaPipe's usual 0.5 default; raise it if false positives appear.
 private const val BALL_SCORE_THRESHOLD = 0.3f
+// DetectionMode.BODY: same model, "person" class only. People are large and
+// well-represented in COCO, so MediaPipe's usual 0.5 threshold is fine.
+private const val PERSON_CATEGORY = "person"
+private const val PERSON_SCORE_THRESHOLD = 0.5f
+// BODY-mode aim point. Aiming at the person box's centre (the hips) pushes the
+// head out of the top of the frame whenever the subject is close, so the aim
+// is pulled up towards the face: FACE_AIM_OFFSET face-heights below the face
+// centre (about the chest), never lower than the body centre. With no face
+// visible (subject turned away) it falls back to this fraction of the box
+// height from its top, which lands in about the same place on a full body.
+private const val FACE_AIM_OFFSET = 1.5f
+private const val BODY_AIM_FALLBACK_FRACTION = 0.25f
 
 // How many consecutive frames a locked target may go unmatched before the lock
 // is released. During this window the system coasts on the Kalman prediction
@@ -157,12 +179,18 @@ class MainActivity : ComponentActivity() {
     private var predictionHorizonSeconds by mutableStateOf(DEFAULT_PREDICTION_HORIZON_SECONDS)
     private var testName by mutableStateOf("")
     private var testNotes by mutableStateOf("")
+    private var loggingStartedUnsynced = false
 
     data class DetectedObjectInfo(
         val boundingBox: Rect,
         val trackingId: Int?,
         val label: String = "Object",
-        val isLocked: Boolean = false
+        val isLocked: Boolean = false,
+        // Point to centre in frame, if not the box centre (BODY mode).
+        val aimX: Float? = null,
+        val aimY: Float? = null,
+        // Face matched to this body (BODY mode), drawn as a second box.
+        val faceBox: Rect? = null
     )
 
     data class DetectionResult(
@@ -233,6 +261,12 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         cameraExecutor = Executors.newSingleThreadExecutor()
         logManager = LogManager(this)
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            ContextCompat.registerReceiver(
+                this, tuneReceiver, IntentFilter("com.example.tripodtracker.TUNE"), ContextCompat.RECEIVER_EXPORTED
+            )
+            restoreTuneSettings()
+        }
 
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         esp32Ip = prefs.getString(PREF_ESP32_IP, null)?.takeIf { it.isNotBlank() } ?: DEFAULT_ESP32_IP
@@ -341,7 +375,16 @@ class MainActivity : ComponentActivity() {
 
         val onToggleLogging: (Boolean) -> Unit = {
             isLogging = it
-            if (it) logManager.startSession(buildSessionMetadata()) else logManager.saveLog()
+            if (it) {
+                // Ask for the gains if they were never synced (e.g. the app was
+                // restarted); the reply lands well before the log is saved.
+                loggingStartedUnsynced = tripodConfig == null
+                if (loggingStartedUnsynced) udpSender.send("CFG?")
+                logManager.startSession(buildSessionMetadata())
+            } else {
+                if (loggingStartedUnsynced) logManager.startSession(buildSessionMetadata())
+                logManager.saveLog()
+            }
         }
 
         when (currentScreen) {
@@ -373,8 +416,8 @@ class MainActivity : ComponentActivity() {
                         udpSender.send(
                             String.format(
                                 Locale.US,
-                                "CFG:KP:%.2f,KI:%.2f,KD:%.2f,MS:%.1f,DZ:%.3f",
-                                config.kp, config.ki, config.kd, config.maxSpeedOffsetUs, config.deadzone
+                                "CFG:KP:%.2f,KI:%.2f,KD:%.2f,MS:%.1f,DZ:%.3f,MO:%.1f",
+                                config.kp, config.ki, config.kd, config.maxSpeedOffsetUs, config.deadzone, config.minOffsetUs
                             )
                         )
                     },
@@ -457,6 +500,50 @@ class MainActivity : ComponentActivity() {
             .apply()
     }
 
+    // Debug-build tuning hook: lets a computer set up the next test run over adb
+    // instead of the Experiment-tab sliders, e.g.
+    //   adb shell am broadcast -a com.example.tripodtracker.TUNE \
+    //       --ef kp 110 --ef ki 0 --ef kd 0 --ef h 0 --ef r 100 --ef sa 150 --es name R3
+    // Every extra is optional; PID keys left out keep the tripod's current value.
+    private val tuneReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            fun f(key: String) = if (intent.hasExtra(key)) intent.getFloatExtra(key, 0f) else null
+            // Kept across an app restart (the phone is unplugged and carried to
+            // the rig between "apply" and "record"), see restoreTuneSettings().
+            val edit = getSharedPreferences(TUNE_PREFS, MODE_PRIVATE).edit()
+            for (key in listOf("r", "sa", "h")) f(key)?.let { edit.putFloat(key, it) }
+            for (key in listOf("name", "notes", "mode")) intent.getStringExtra(key)?.let { edit.putString(key, it) }
+            edit.apply()
+            restoreTuneSettings()
+            val pid = listOf("kp" to "KP", "ki" to "KI", "kd" to "KD", "ms" to "MS", "dz" to "DZ", "mo" to "MO", "td" to "TD", "sl" to "SL")
+                .mapNotNull { (extra, key) -> f(extra)?.let { String.format(Locale.US, "%s:%.3f", key, it) } }
+            // The tripod answers every CFG packet with its (clamped) gains, which
+            // updates tripodConfig and so the log header.
+            udpSender.send(if (pid.isEmpty()) "CFG?" else "CFG:" + pid.joinToString(","))
+            Toast.makeText(context, "Run $testName ready: " + pid.joinToString(" ") +
+                " H=$predictionHorizonSeconds R=${kalmanFilterX.measurementNoise} sa=${kalmanFilterX.accelerationNoise}",
+                Toast.LENGTH_LONG).show()
+            Log.i("TuneHook", "applied h=$predictionHorizonSeconds R=${kalmanFilterX.measurementNoise} " +
+                "sa=${kalmanFilterX.accelerationNoise} name=$testName pid=$pid")
+        }
+    }
+
+    private fun restoreTuneSettings() {
+        val prefs = getSharedPreferences(TUNE_PREFS, MODE_PRIVATE)
+        if (prefs.contains("r")) prefs.getFloat("r", 0f).let { kalmanFilterX.measurementNoise = it; kalmanFilterY.measurementNoise = it }
+        if (prefs.contains("sa")) prefs.getFloat("sa", 0f).let { kalmanFilterX.accelerationNoise = it; kalmanFilterY.accelerationNoise = it }
+        if (prefs.contains("h")) predictionHorizonSeconds = prefs.getFloat("h", 0f)
+        prefs.getString("name", null)?.let { testName = it }
+        prefs.getString("notes", null)?.let { testNotes = it }
+        prefs.getString("mode", null)?.let { name ->
+            DetectionMode.entries.firstOrNull { it.name == name }?.takeIf { it != detectionMode }?.let {
+                detectionMode = it
+                kalmanFilterX.reset()
+                kalmanFilterY.reset()
+            }
+        }
+    }
+
     private fun buildSessionMetadata(): Map<String, String> {
         val cfg = tripodConfig
         return linkedMapOf(
@@ -470,7 +557,9 @@ class MainActivity : ComponentActivity() {
             "tripod_ki" to (cfg?.ki?.toString() ?: "unknown (not synced)"),
             "tripod_kd" to (cfg?.kd?.toString() ?: "unknown (not synced)"),
             "tripod_max_speed_offset_us" to (cfg?.maxSpeedOffsetUs?.toString() ?: "unknown (not synced)"),
-            "tripod_deadzone" to (cfg?.deadzone?.toString() ?: "unknown (not synced)")
+            "tripod_deadzone" to (cfg?.deadzone?.toString() ?: "unknown (not synced)"),
+            "tripod_min_offset_us" to (cfg?.minOffsetUs?.toString() ?: "unknown (not synced)"),
+            "tripod_slew_us_per_s" to (cfg?.slewUsPerS?.toString() ?: "unknown (not synced)")
         )
     }
 
@@ -482,6 +571,7 @@ class MainActivity : ComponentActivity() {
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
         }
+        try { unregisterReceiver(tuneReceiver) } catch (e: IllegalArgumentException) { /* release build: never registered */ }
         handLandmarker?.close()
         udpSender.close()
     }
@@ -591,6 +681,18 @@ fun CameraPreviewScreen(
                             size = Size(right - left, bottom - top),
                             style = Stroke(width = if (obj.isLocked) 8.dp.toPx() else 6.dp.toPx())
                         )
+
+                        // BODY mode: the face the aim point is anchored to.
+                        obj.faceBox?.let { face ->
+                            val fLeft = if (isFront) size.width - (face.right * scaleX) else face.left * scaleX
+                            val fRight = if (isFront) size.width - (face.left * scaleX) else face.right * scaleX
+                            drawRect(
+                                color = Color.Yellow,
+                                topLeft = Offset(fLeft, face.top * scaleY),
+                                size = Size(fRight - fLeft, (face.bottom - face.top) * scaleY),
+                                style = Stroke(width = 3.dp.toPx())
+                            )
+                        }
                     }
                 }
 
@@ -634,11 +736,19 @@ fun CameraPreviewScreen(
                     Icon(Icons.Default.Tune, contentDescription = "Experiment", tint = Color.White)
                 }
                 IconButton(onClick = {
-                    val next = if (detectionMode == DetectionMode.FACE) DetectionMode.BALL else DetectionMode.FACE
+                    val next = when (detectionMode) {
+                        DetectionMode.FACE -> DetectionMode.BODY
+                        DetectionMode.BODY -> DetectionMode.BALL
+                        DetectionMode.BALL -> DetectionMode.FACE
+                    }
                     onDetectionModeChange(next)
                 }) {
                     Icon(
-                        imageVector = if (detectionMode == DetectionMode.FACE) Icons.Default.Face else Icons.Default.SportsBaseball,
+                        imageVector = when (detectionMode) {
+                            DetectionMode.FACE -> Icons.Default.Face
+                            DetectionMode.BODY -> Icons.Default.Accessibility
+                            DetectionMode.BALL -> Icons.Default.SportsBaseball
+                        },
                         contentDescription = "Detection mode: ${detectionMode.name}",
                         tint = Color.White
                     )
@@ -744,34 +854,46 @@ fun CameraPreviewScreen(
                 .build()
             val faceDetector = FaceDetection.getClient(faceOptions)
 
-            // Ball detector for DetectionMode.BALL. Created lazily on the analysis
-            // executor the first time BALL mode sees a frame (model load is too slow
-            // for the main thread, and FACE-only sessions never pay for it), and only
-            // ever used and closed on that same thread.
+            // COCO detectors for DetectionMode.BALL ("sports ball") and BODY
+            // ("person"). Each is created lazily on the analysis executor the first
+            // time its mode sees a frame (model load is too slow for the main
+            // thread, and FACE-only sessions never pay for it), and only ever used
+            // and closed on that same thread.
             var ballDetector: BallDetector? = null
+            var personDetector: BallDetector? = null
             // Set (on the executor) once this effect is torn down. A frame already
             // queued for this effect's analyzer can still run after the close task,
             // and calling detect() on a closed MediaPipe detector is a native
             // SIGSEGV, not a catchable exception -- so never hand one out.
-            var ballDetectorClosed = false
+            var detectorsClosed = false
             val ballTracker = BallTracker()
+            // Separate instance so switching modes never carries IDs across.
+            val personTracker = BallTracker()
             val colorBallDetector = ColorBallDetector()
+            fun createCocoDetector(category: String, scoreThreshold: Float): BallDetector? = try {
+                val options = BallDetector.ObjectDetectorOptions.builder()
+                    .setBaseOptions(BaseOptions.builder().setModelAssetPath(BALL_MODEL_ASSET).build())
+                    .setRunningMode(RunningMode.IMAGE)
+                    .setCategoryAllowlist(listOf(category))
+                    .setScoreThreshold(scoreThreshold)
+                    .setMaxResults(5)
+                    .build()
+                BallDetector.createFromOptions(context, options)
+            } catch (e: Exception) {
+                Log.e("CamX", "COCO detector ($category) init failed: ${e.message}")
+                null
+            }
             val getBallDetector: () -> BallDetector? = {
-                if (ballDetector == null && !ballDetectorClosed) {
-                    try {
-                        val options = BallDetector.ObjectDetectorOptions.builder()
-                            .setBaseOptions(BaseOptions.builder().setModelAssetPath(BALL_MODEL_ASSET).build())
-                            .setRunningMode(RunningMode.IMAGE)
-                            .setCategoryAllowlist(listOf(BALL_CATEGORY))
-                            .setScoreThreshold(BALL_SCORE_THRESHOLD)
-                            .setMaxResults(5)
-                            .build()
-                        ballDetector = BallDetector.createFromOptions(context, options)
-                    } catch (e: Exception) {
-                        Log.e("CamX", "Ball detector init failed: ${e.message}")
-                    }
+                if (ballDetector == null && !detectorsClosed) {
+                    ballDetector = createCocoDetector(BALL_CATEGORY, BALL_SCORE_THRESHOLD)
                 }
                 ballDetector
+            }
+            val getPersonDetector: () -> BallDetector? = {
+                if (personDetector == null && !detectorsClosed) {
+                    personDetector = createCocoDetector(PERSON_CATEGORY, PERSON_SCORE_THRESHOLD)
+                }
+                personDetector
             }
 
             var frameCounter = 0
@@ -787,8 +909,10 @@ fun CameraPreviewScreen(
                         processImageProxy(
                             faceDetector,
                             getBallDetector,
+                            getPersonDetector,
                             colorBallDetector,
                             ballTracker,
+                            personTracker,
                             currentDetectionMode,
                             currentLandmarker,
                             imageProxy,
@@ -848,9 +972,11 @@ fun CameraPreviewScreen(
                 imageAnalyzer.clearAnalyzer()
                 faceDetector.close()
                 executor.execute {
-                    ballDetectorClosed = true
+                    detectorsClosed = true
                     ballDetector?.close()
                     ballDetector = null
+                    personDetector?.close()
+                    personDetector = null
                 }
             }
         }
@@ -1016,8 +1142,10 @@ fun ConnectionScreen(
 private fun processImageProxy(
     faceDetector: FaceDetector,
     getBallDetector: () -> BallDetector?,
+    getPersonDetector: () -> BallDetector?,
     colorBallDetector: ColorBallDetector,
     ballTracker: BallTracker,
+    personTracker: BallTracker,
     mode: DetectionMode,
     handLandmarker: HandLandmarker?,
     imageProxy: ImageProxy,
@@ -1112,6 +1240,35 @@ private fun processImageProxy(
                 Log.e("CamX", "Ball detection error: ${e.message}")
                 Tasks.forException(e)
             }
+            // Whole-body boxes from the COCO "person" class. Like BALL, this is a
+            // per-frame detector with no IDs, so a BallTracker (generic box
+            // tracker) supplies them for lock-on and coasting. The person
+            // detector runs synchronously here on the executor (MediaPipe must
+            // stay on this thread); ML Kit faces are then matched to each body
+            // to aim at the upper body -- see bodyAimPoint().
+            DetectionMode.BODY -> try {
+                val detector = getPersonDetector() ?: throw IllegalStateException("Person detector unavailable")
+                val boxes = detector.detect(BitmapImageBuilder(uprightBitmap).build()).detections().map { d ->
+                    val b = d.boundingBox()
+                    BallBox(b.left.toInt(), b.top.toInt(), b.right.toInt(), b.bottom.toInt())
+                }
+                val bodies = personTracker.update(boxes)
+                faceDetector.process(image).continueWith { t ->
+                    val faces = if (t.isSuccessful) t.result.map { it.boundingBox } else emptyList()
+                    bodies.map { (box, id) ->
+                        val body = Rect(box.left, box.top, box.right, box.bottom)
+                        // Largest face whose centre lies inside this body box.
+                        val face = faces
+                            .filter { body.contains(it.centerX(), it.centerY()) }
+                            .maxByOrNull { it.width().toLong() * it.height().toLong() }
+                        val (aimX, aimY) = bodyAimPoint(body, face)
+                        MainActivity.DetectedObjectInfo(body, id, label = "Person", aimX = aimX, aimY = aimY, faceBox = face)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("CamX", "Person detection error: ${e.message}")
+                Tasks.forException(e)
+            }
         }
 
         detectionTask
@@ -1140,7 +1297,8 @@ private fun processImageProxy(
                         MainActivity.DetectedObjectInfo(
                             it.boundingBox,
                             it.trackingId,
-                            isLocked = it.trackingId == lockedId
+                            isLocked = it.trackingId == lockedId,
+                            faceBox = it.faceBox
                         )
                     )
                 } ?: emptyList()
@@ -1170,8 +1328,8 @@ private fun processImageProxy(
                 val predictedY: Float
 
                 if (targetObject != null) {
-                    rawX = targetObject.boundingBox.exactCenterX()
-                    rawY = targetObject.boundingBox.exactCenterY()
+                    rawX = targetObject.aimX ?: targetObject.boundingBox.exactCenterX()
+                    rawY = targetObject.aimY ?: targetObject.boundingBox.exactCenterY()
                     filteredX = kalmanFilterX.update(rawX, imageProxy.imageInfo.timestamp)
                     filteredY = kalmanFilterY.update(rawY, imageProxy.imageInfo.timestamp)
                     predictedX = kalmanFilterX.predictFuture(predictionHorizonSeconds)
@@ -1249,6 +1407,20 @@ private fun processImageProxy(
     } else {
         imageProxy.close()
     }
+}
+
+/**
+ * BODY-mode aim point for a person box: horizontally the body centre, vertically
+ * pulled up towards the face so the head stays in frame with as much of the body
+ * as fits (see FACE_AIM_OFFSET / BODY_AIM_FALLBACK_FRACTION).
+ */
+private fun bodyAimPoint(body: Rect, face: Rect?): Pair<Float, Float> {
+    val aimY = if (face != null) {
+        minOf(face.exactCenterY() + FACE_AIM_OFFSET * face.height(), body.exactCenterY())
+    } else {
+        body.top + BODY_AIM_FALLBACK_FRACTION * body.height()
+    }
+    return body.exactCenterX() to aimY
 }
 
 @OptIn(ExperimentalGetImage::class)

@@ -111,8 +111,8 @@ To diagnose a disconnect:
 
 Same `KEY:value` convention as `EX`/`EY` and `BATT`, on the same UDP flow:
 
-- **Set**, app -> firmware: `CFG:KP:110.00,KI:50.00,KD:5.00,MS:220.0,DZ:0.030` -- all five
-  gains together (the app always sends its full current set). Applying a set also zeroes
+- **Set**, app -> firmware: `CFG:KP:18.00,KI:0.00,KD:0.00,MS:300.0,DZ:0.030,MO:52.0` -- the values together
+  (`TD:<1|-1>` tilt direction and `SL:<v>` pulse ramp limit are optional extras) (the app always sends its full current set). Applying a set also zeroes
   `panIntegral`/`tiltIntegral`, same as the Serial `KI<v>` handler.
 - **Query**, app -> firmware: `CFG?` -- returns the current gains without changing anything
   (used by the Experiment tab's "Sync from Tripod").
@@ -187,27 +187,34 @@ peak-current measurements.
 
 ## Tuning the PID
 
-The gains at the top of `camx_tripod.ino` are **derived from a plant model**, not
-hand-picked -- the header comment there carries the full derivation. The short version:
+The gains at the top of `camx_tripod.ino` were **measured on the rig** (pendulum
+calibration of 2026-10-06; see `Tests/calibration.m` and the header comment in the
+sketch). The first set (`KP = 110`, `KI = 50`, `KD = 5`) came from a model that assumed a
+linear servo and a 0.15 s loop delay. Neither held:
 
-The plant is a **pure integrator**: pulse offset `u` (us) commands camera angular rate
-`w = Ks*u`, and the app's normalized error is `angle / half_FOV`, so
-`de/dt = -(Ks/half_FOV) * u`. For an integrator plant the **loop delay `L` alone** caps
-the usable gain (via phase margin):
+- the servos have a dead band of about 52 us either side of neutral, and beyond it the
+  whole useful speed range is only about 8 us wide;
+- the loop delay was 0.42 s, of which 0.14 s was the app's Kalman filter, about 0.11 s the
+  pulse ramp across the dead band, and about 0.17 s camera, network and servo.
 
-```
-w_c = KP * Ks / half_FOV                        (loop crossover frequency)
-PM  = 90deg - w_c*L*(180/pi) - ~10deg(I term)   (aim for PM ~= 50deg)
-KP  = w_c * half_FOV / Ks
-KI  = (w_c / 6) * KP
-KD  = 0        (an integrator needs no D, and it only amplifies vision jitter)
-```
+The **shipped defaults are `KP = 18`, `KI = 0`, `KD = 0`, `MIN_OFFSET_US = 52`,
+`MAX_SPEED_OFFSET_US = 300`**, used with the app's filter at `R = 5`, `sigma_a = 300` and a
+prediction horizon of 0.20 s. `KI` and `KD` were not needed on the pendulum and have not
+been tuned.
 
-The model with `Ks ~= 1.8 deg/s/us` (FS90R-class @ 5V, loaded), `half_FOV ~= 26deg` (pan) /
-`33deg` (tilt), `L ~= 0.15 s` gives `KP ~= 55`, `KI ~= 30`. That felt sluggish on the
-bench (the `L` estimate is pessimistic -- it double-counts delay the app-side Kalman
-look-ahead already removes), so the **shipped defaults are `KP = 110`, `KI = 50`,
-`MAX_SPEED_OFFSET_US = 220`**, roughly `w_c ~= 5-6 rad/s`.
+### Servo dead-band compensation (`MIN_OFFSET_US`)
+
+The MG996R continuous-rotation servos do not move for pulses within about 52 us of
+neutral. With a plain PID that makes low gains do nothing at all, and the first gain that
+does move the camera is already high enough to hunt. Outside `DEADZONE`, the firmware
+therefore adds `MIN_OFFSET_US` to the PID output in the direction of the error, so the
+command starts at the edge of the dead band. `MO0` restores the plain PID.
+
+To measure the dead band and the servo speed on a rig, hang a ball still in view and send
+`KP0`, `DZ0` and `MO<v>`: the output is then a fixed `+-v` us, and the camera rocks across
+the ball. The slope of the logged offset is the camera speed at that pulse, and the time
+from the ball crossing centre to the camera reversing is the loop delay. Measured values:
+52 us gives 0.06 / 0.17 half-frames/s (the two directions), 60 us gives about 1.2.
 
 ### Live tuning over Serial (or the app's Experiment tab)
 
@@ -220,6 +227,9 @@ KI70      set KI = 70   (also zeroes the integrators)
 KD0       set KD
 MS160     set MAX_SPEED_OFFSET_US = 160
 DZ0.05    set DEADZONE = 0.05
+MO52      set MIN_OFFSET_US = 52   (servo dead-band compensation, 0..80, 0 = off)
+TD-1      set TILT_DIR (1 or -1)
+SL3000    set MAX_SLEW_US_PER_S (500..20000)
 ?         print current values
 ```
 
@@ -227,22 +237,10 @@ The same five gains are also live-tunable from the phone, over UDP, via the Expe
 tab -- see "CFG protocol" above. Either path updates the same in-memory values, and either
 one's changes show up in the other (`?` over Serial, or "Sync from Tripod" in the app).
 
-Method: raise `KP` until the camera just starts to overshoot or hunt around the subject,
-then back off ~30%. Set `KI` to about `KP/1.5` and lower it if you see slow oscillation.
-Leave `KD` at 0. Then copy the values you settled on back into `camx_tripod.ino`.
-
-To make the gains exact from first principles instead, measure the three model inputs and
-recompute with the formulas above:
-
-1. **`Ks`** -- in the Serial Monitor send `P1600` (neutral + 100 us) and time one full
-   revolution of the pan output with a stopwatch: `Ks = 360 / (t_seconds * 100)`. Repeat
-   at `P1700` to check linearity, and do the same for tilt with `T1600`.
-2. **`half_FOV`** -- mark two points a known distance `d` apart on a wall at a known
-   range `r`, note what fraction `f` of the frame width they span:
-   `half_FOV = atan((d/2) / r) / f`, in degrees.
-3. **`L`** -- enable CSV logging in the app, step the subject sharply, and measure the lag
-   from the `RawX` jump to the servo first moving (or use an LED flash + slow-motion
-   video). Then `w_c = (pi/2 - PM_rad - 0.17) / L` and recompute `KP`, `KI` above.
+Method that worked on this rig: set `MIN_OFFSET_US` to the measured dead-band edge, cut
+the app's filter lag (`R = 5`), start `KP` low (about 18) and add prediction horizon until
+the share of wrong-direction commands in the log approaches 10%. Then copy the values you
+settled on back into `camx_tripod.ino`.
 
 If tilt visibly lags pan (gravity load on that axis), raise the shared `KP`/`KI` ~25% or
 split them into per-axis constants.
