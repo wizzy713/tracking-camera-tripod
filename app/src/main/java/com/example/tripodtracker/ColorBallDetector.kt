@@ -38,10 +38,12 @@ data class BallBox(val left: Int, val top: Int, val right: Int, val bottom: Int)
  */
 class ColorBallDetector(
     // Optic yellow is ~70 deg; the range is widened for shadow (greener) and
-    // warm indoor light (more yellow). Skin (~20-30 deg) stays outside it.
+    // warm indoor light (more yellow), and up to 115 deg for the lime-green
+    // ball of the pendulum rig (measured ~97-108 deg, saturation ~0.40-0.50 in
+    // dim indoor light). Skin (~20-30 deg) stays outside it.
     private val hueMin: Float = 45f,
-    private val hueMax: Float = 85f,
-    private val satMin: Float = 0.40f,
+    private val hueMax: Float = 115f,
+    private val satMin: Float = 0.35f,
     private val valMin: Float = 0.30f,
 ) {
     private var pixels = IntArray(0)

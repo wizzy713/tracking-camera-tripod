@@ -17,7 +17,7 @@ import java.util.Locale
 // Mirrors the .ino's shipped defaults (camx_tripod.ino) -- shown until the first
 // CFG reply arrives from the tripod (see MainActivity.tripodConfig).
 private val UNSYNCED_DEFAULT_CONFIG = TripodConfig(
-    kp = 110f, ki = 50f, kd = 5f, maxSpeedOffsetUs = 220f, deadzone = 0.03f
+    kp = 18f, ki = 0f, kd = 0f, maxSpeedOffsetUs = 300f, deadzone = 0.03f, minOffsetUs = 52f
 )
 
 /**
@@ -52,6 +52,7 @@ fun ExperimentScreen(
     var kd by remember { mutableFloatStateOf(tripodConfig?.kd ?: UNSYNCED_DEFAULT_CONFIG.kd) }
     var maxSpeedOffsetUs by remember { mutableFloatStateOf(tripodConfig?.maxSpeedOffsetUs ?: UNSYNCED_DEFAULT_CONFIG.maxSpeedOffsetUs) }
     var deadzone by remember { mutableFloatStateOf(tripodConfig?.deadzone ?: UNSYNCED_DEFAULT_CONFIG.deadzone) }
+    var minOffsetUs by remember { mutableFloatStateOf(tripodConfig?.minOffsetUs ?: UNSYNCED_DEFAULT_CONFIG.minOffsetUs) }
 
     // Any CFG reply (an "Apply" echo or a "Sync" query response) re-seeds the
     // sliders, so the UI always reflects what the tripod actually has -- e.g.
@@ -63,6 +64,7 @@ fun ExperimentScreen(
             kd = it.kd
             maxSpeedOffsetUs = it.maxSpeedOffsetUs
             deadzone = it.deadzone
+            minOffsetUs = it.minOffsetUs
         }
     }
 
@@ -95,12 +97,13 @@ fun ExperimentScreen(
             GainSlider("KD", kd, 0f..20f) { kd = it }
             GainSlider("MAX_SPEED_OFFSET_US", maxSpeedOffsetUs, 10f..400f, decimals = 0) { maxSpeedOffsetUs = it }
             GainSlider("DEADZONE", deadzone, 0f..0.2f, decimals = 3) { deadzone = it }
+            GainSlider("MIN_OFFSET_US (servo dead band)", minOffsetUs, 0f..80f, decimals = 0) { minOffsetUs = it }
 
             Spacer(modifier = Modifier.height(8.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 Button(onClick = onSyncFromTripod) { Text("Sync from Tripod") }
                 Button(onClick = {
-                    onApplyPid(TripodConfig(kp, ki, kd, maxSpeedOffsetUs, deadzone))
+                    onApplyPid(TripodConfig(kp, ki, kd, maxSpeedOffsetUs, deadzone, minOffsetUs))
                 }) { Text("Apply to Tripod") }
             }
         }
@@ -133,6 +136,11 @@ fun ExperimentScreen(
                     label = { Text("Face") }
                 )
                 FilterChip(
+                    selected = detectionMode == DetectionMode.BODY,
+                    onClick = { onDetectionModeChange(DetectionMode.BODY) },
+                    label = { Text("Body") }
+                )
+                FilterChip(
                     selected = detectionMode == DetectionMode.BALL,
                     onClick = { onDetectionModeChange(DetectionMode.BALL) },
                     label = { Text("Ball") }
@@ -140,7 +148,9 @@ fun ExperimentScreen(
             }
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                "Ball mode tracks a yellow tennis ball by colour (works through a net), falling back " +
+                "Body mode tracks the whole person (COCO \"person\" class), so it keeps " +
+                    "following when the subject turns away from the camera. " +
+                    "Ball mode tracks a yellow tennis ball by colour (works through a net), falling back " +
                     "to the COCO \"sports ball\" model -- " +
                     "use it for the pendulum test in TESTING.md.",
                 style = MaterialTheme.typography.bodySmall,
