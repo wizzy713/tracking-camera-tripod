@@ -18,6 +18,8 @@
  *   write(90) against our attach range emits 1450 us, not 1500, and that
  *   50 us bias alone makes a well-trimmed servo creep one way forever. See
  *   PAN_NEUTRAL_US / TILT_NEUTRAL_US / MAX_SPEED_OFFSET_US below.
+ * - Manual joystick drive (JOY:x,y,SEQ:value): open-loop speed command from
+ *   the app's on-screen joystick, bypassing the PID. See updateManual().
  * - Loss-of-signal failsafe: stops both motors if no UDP packet has been
  *   received recently, so a dropped connection or closed app can't leave a
  *   continuous-rotation servo spinning indefinitely.
@@ -161,6 +163,13 @@ int TILT_DIR = +1;         // Flipped to -1 on 2026-10-01, back to +1 on 2026-10
                            // tested. With compensation at 45 us it moved, and -1 drove it AWAY from
                            // the ball. RUNTIME-TUNABLE so a wrong guess needs no reflash: Serial
                            // "TD1" / "TD-1", UDP "CFG:...,TD:<1|-1>" (not kept across a reboot).
+
+// Manual joystick drive ("JOY:" packets, see updateManual). Full stick commands
+// MIN_OFFSET_US + JOY_SPEED_RANGE_US from neutral: the same 52-70 us span the
+// tracking loop uses at the default gains, which is where the measured servo
+// goes from just moving to ~2 half-frames/s. Inside JOY_DEADZONE the axis stops.
+const float JOY_SPEED_RANGE_US = 18.0f;
+const float JOY_DEADZONE = 0.08f;
 
 // Divergence guard. A correctly-wired loop pulls |error| back toward 0. If
 // |error| instead stays pinned at the frame edge for this long, the loop is
@@ -446,19 +455,24 @@ void loop() {
 
     if (payload.startsWith("CFG")) {
       handleConfigPacket(payload);
+    } else if (payload.startsWith("JOY:")) {
+      int comma = payload.indexOf(',');
+      if (comma != -1) {
+        float joyX = payload.substring(4, comma).toFloat();
+        float joyY = payload.substring(comma + 1).toFloat();   // toFloat() stops at ",SEQ:"
+        if (seqIndex != -1 && !acceptSeq((uint32_t) payload.substring(seqIndex + 5).toInt())) return;
+
+        lastPacketMillis = millis();
+        motorsStopped = false;
+        updateManual(joyX, joyY);
+      }
     } else if (exIndex != -1 && eyIndex != -1) {
       float errX = payload.substring(exIndex + 3, eyIndex).toFloat();
       float errY;
 
       if (seqIndex != -1) {
         errY = payload.substring(eyIndex + 4, seqIndex).toFloat();
-        uint32_t seq = (uint32_t) payload.substring(seqIndex + 5).toInt();
-        if (haveSeq && seq < lastSeq) {
-          Serial.println("Dropped out-of-order packet");
-          return;
-        }
-        lastSeq = seq;
-        haveSeq = true;
+        if (!acceptSeq((uint32_t) payload.substring(seqIndex + 5).toInt())) return;
       } else {
         errY = payload.substring(eyIndex + 4).toFloat();
       }
@@ -783,6 +797,20 @@ void sendConfigTelemetry() {
 }
 
 /**
+ * Sequence check shared by the EX/EY and JOY packets (one counter in the app).
+ * Returns false, after logging, for a packet older than the last one acted on.
+ */
+bool acceptSeq(uint32_t seq) {
+  if (haveSeq && seq < lastSeq) {
+    Serial.println("Dropped out-of-order packet");
+    return false;
+  }
+  lastSeq = seq;
+  haveSeq = true;
+  return true;
+}
+
+/**
  * PID speed offset for one axis. Returns 0 (-> NEUTRAL, i.e. stop) whenever
  * the error is within DEADZONE, and resets that axis's integral term at the
  * same time so it doesn't creep once centered.
@@ -854,9 +882,49 @@ void updateTripod(float errX, float errY) {
   float panOffset = computeAxisPID(errX, panIntegral, lastErrX, dt);
   float tiltOffset = computeAxisPID(errY, tiltIntegral, lastErrY, dt);
 
-  // Ramp toward the PID target instead of stepping to it (see
-  // MAX_SLEW_US_PER_S). First packet after a stop has dt == 0; treat it as one
-  // nominal 30 Hz frame so the servo still starts moving.
+  driveServos(panOffset, tiltOffset, dt);
+}
+
+/**
+ * Manual drive from the app's on-screen joystick: x and y in [-1, 1], with the
+ * same sign convention as the tracking error (positive x pans the way a subject
+ * right of centre would, positive y tilts the way a subject below centre would).
+ * Open loop -- stick deflection maps straight to a speed, starting at the edge
+ * of the servo dead band (MIN_OFFSET_US) so the whole stick travel is usable.
+ * The PID and the divergence guard are bypassed (a held stick is not a runaway
+ * loop); the slew limit and the loss-of-signal failsafe still apply.
+ */
+void updateManual(float joyX, float joyY) {
+  unsigned long now = millis();
+  float dt = (lastUpdateMillis == 0) ? 0.0f : (now - lastUpdateMillis) / 1000.0f;
+  lastUpdateMillis = now;
+
+  // Leave nothing behind for the tracking loop to pick up when it resumes.
+  panIntegral = 0.0f;
+  tiltIntegral = 0.0f;
+  lastErrX = 0.0f;
+  lastErrY = 0.0f;
+  panSaturatedSince = 0;
+  tiltSaturatedSince = 0;
+  controlDiverged = false;
+
+  driveServos(joyAxisOffset(joyX), joyAxisOffset(joyY), dt);
+}
+
+float joyAxisOffset(float v) {
+  v = constrain(v, -1.0f, 1.0f);
+  if (fabs(v) <= JOY_DEADZONE) return 0.0f;
+  float offset = MIN_OFFSET_US + fabs(v) * JOY_SPEED_RANGE_US;
+  return (v > 0.0f) ? offset : -offset;
+}
+
+/**
+ * Writes a pan/tilt speed (offset from neutral in us, before *_DIR) to the
+ * servos, ramping toward it instead of stepping to it (see MAX_SLEW_US_PER_S).
+ * The first packet after a stop has dt == 0; treat it as one nominal 30 Hz
+ * frame so the servo still starts moving.
+ */
+void driveServos(float panOffset, float tiltOffset, float dt) {
   float slewDt = (dt > 0.0f) ? min(dt, MAX_SLEW_DT_S) : (1.0f / 30.0f);
   float maxStep = MAX_SLEW_US_PER_S * slewDt;
   panCmdOffsetUs  += constrain(PAN_DIR  * panOffset  - panCmdOffsetUs,  -maxStep, maxStep);

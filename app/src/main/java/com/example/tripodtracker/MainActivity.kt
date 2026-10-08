@@ -31,10 +31,14 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -47,9 +51,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -59,6 +65,7 @@ import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetector as BallDetector
+import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
@@ -72,6 +79,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
+import kotlin.math.abs
 import kotlin.math.hypot
 
 // How far ahead the Kalman filter predicts, in seconds, to compensate for the
@@ -107,6 +115,25 @@ private const val DEFAULT_UDP_PORT = 4210
 private const val DISCOVERY_INTERVAL_MS = 2000L
 private const val DISCOVERY_SILENCE_MS = 5000L
 
+// Advanced settings (Settings screen -> SharedPreferences).
+private const val ADVANCED_PREFS = "advanced_settings"
+private const val PREF_MANUAL_MODE = "manual_mode"
+private const val PREF_AUTO_ZOOM = "auto_zoom"
+private const val PREF_AUTO_ZOOM_TARGET = "auto_zoom_target"
+// Manual joystick: how often the stick position is sent. The firmware stops the
+// motors after 500 ms of silence, so this also keeps a held stick alive.
+private const val JOYSTICK_SEND_INTERVAL_MS = 33L
+// The smaller stick axis is ignored while it is below this fraction of the
+// larger one (tan 30 deg) -- see snapToAxis.
+private const val JOYSTICK_AXIS_SNAP = 0.58f
+// Auto zoom: the subject size held (larger of its width and height, as a
+// fraction of the frame) and the most zoom it may apply. Zooming in makes the
+// same servo speed sweep the frame faster, and the servos' slowest speed is
+// already coarse at 1x (see the dead-band note in camx_tripod.ino), so the cap
+// is deliberately modest.
+private const val DEFAULT_AUTO_ZOOM_TARGET = 0.35f
+private const val AUTO_ZOOM_MAX_RATIO = 3f
+
 // COCO model bundled in assets/ for DetectionMode.BALL, and the only class kept.
 private const val BALL_MODEL_ASSET = "efficientdet_lite0.tflite"
 private const val BALL_CATEGORY = "sports ball"
@@ -125,6 +152,21 @@ private const val PERSON_SCORE_THRESHOLD = 0.5f
 // height from its top, which lands in about the same place on a full body.
 private const val FACE_AIM_OFFSET = 1.5f
 private const val BODY_AIM_FALLBACK_FRACTION = 0.25f
+
+// DetectionMode.BODY's primary detector: MediaPipe Pose Landmarker (BlazePose),
+// which finds people specifically and returns 33 body landmarks each. The COCO
+// "person" detector above remains as the fallback for frames where it finds no
+// one (it reaches further: BlazePose needs the person fairly large in frame).
+private const val POSE_MODEL_ASSET = "pose_landmarker_lite.task"
+private const val MAX_POSES = 3
+
+// Hand gestures. The hand pass runs every Nth frame: often while looking for a
+// subject to lock, less often once locked, when it is only watching for a
+// gesture command and its inference time comes out of the tracking loop.
+private const val HAND_CHECK_INTERVAL_UNLOCKED = 5
+private const val HAND_CHECK_INTERVAL_LOCKED = 10
+// Minimum time between two gesture-triggered record toggles.
+private const val GESTURE_RECORD_COOLDOWN_MS = 3000L
 
 // How many consecutive frames a locked target may go unmatched before the lock
 // is released. During this window the system coasts on the Kalman prediction
@@ -166,6 +208,9 @@ class MainActivity : ComponentActivity() {
     private var isLogging by mutableStateOf(false)
     private var currentScreen by mutableStateOf("camera")
     private var lockedId by mutableStateOf<Int?>(null)
+    // Set by the closed-fist gesture: detection keeps running (so an open palm
+    // can resume it) but the tripod is told to hold still.
+    private var trackingPaused by mutableStateOf(false)
     private var permissionsGranted by mutableStateOf(false)
     private var packetSeq = (System.currentTimeMillis() % 1_000_000_000L)
     private var batteryStatus by mutableStateOf<BatteryStatus?>(null)
@@ -181,6 +226,13 @@ class MainActivity : ComponentActivity() {
     private var testNotes by mutableStateOf("")
     private var loggingStartedUnsynced = false
 
+    // Advanced settings, saved to SharedPreferences (see saveAdvancedSettings).
+    // In manual mode the on-screen joystick drives the tripod (JOY packets) and
+    // the tracking error is not sent.
+    private var manualMode by mutableStateOf(false)
+    private var autoZoomEnabled by mutableStateOf(false)
+    private var autoZoomTarget by mutableFloatStateOf(DEFAULT_AUTO_ZOOM_TARGET)
+
     data class DetectedObjectInfo(
         val boundingBox: Rect,
         val trackingId: Int?,
@@ -190,7 +242,10 @@ class MainActivity : ComponentActivity() {
         val aimX: Float? = null,
         val aimY: Float? = null,
         // Face matched to this body (BODY mode), drawn as a second box.
-        val faceBox: Rect? = null
+        val faceBox: Rect? = null,
+        // Pose landmarks in frame pixels, null where not visible (BODY mode, when
+        // the pose model found this person), drawn as a skeleton.
+        val skeleton: List<Offset?>? = null
     )
 
     data class DetectionResult(
@@ -204,7 +259,9 @@ class MainActivity : ComponentActivity() {
         // True only on frames where the hand detector actually ran (it runs
         // every Nth frame); lets the UI refresh the overlay without flicker on
         // the skipped frames and clear it once the hand truly leaves.
-        val handChecked: Boolean = false
+        val handChecked: Boolean = false,
+        // What the hand is doing, on frames where handChecked is true.
+        val gesture: HandGesture = HandGesture.NONE
     )
 
     /** Latest hand skeleton to render. Landmarks are normalized [0,1] in the
@@ -271,6 +328,11 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         esp32Ip = prefs.getString(PREF_ESP32_IP, null)?.takeIf { it.isNotBlank() } ?: DEFAULT_ESP32_IP
         udpPort = prefs.getInt(PREF_UDP_PORT, DEFAULT_UDP_PORT).takeIf { it in 1..65535 } ?: DEFAULT_UDP_PORT
+
+        val advanced = getSharedPreferences(ADVANCED_PREFS, MODE_PRIVATE)
+        manualMode = advanced.getBoolean(PREF_MANUAL_MODE, false)
+        autoZoomEnabled = advanced.getBoolean(PREF_AUTO_ZOOM, false)
+        autoZoomTarget = advanced.getFloat(PREF_AUTO_ZOOM_TARGET, DEFAULT_AUTO_ZOOM_TARGET)
 
         // Battery telemetry from the tripod's INA219 fuel gauge (UDP reply).
         udpSender.onBattery = { status ->
@@ -395,6 +457,12 @@ class MainActivity : ComponentActivity() {
                     currentPort = udpPort,
                     isLogging = isLogging,
                     onToggleLogging = onToggleLogging,
+                    manualMode = manualMode,
+                    onManualModeChange = { manualMode = it; saveAdvancedSettings() },
+                    autoZoomEnabled = autoZoomEnabled,
+                    onAutoZoomEnabledChange = { autoZoomEnabled = it; saveAdvancedSettings() },
+                    autoZoomTarget = autoZoomTarget,
+                    onAutoZoomTargetChange = { autoZoomTarget = it; saveAdvancedSettings() },
                     onConnect = { ip, port ->
                         esp32Ip = ip
                         udpPort = port
@@ -462,11 +530,24 @@ class MainActivity : ComponentActivity() {
                         kalmanFilterY.reset()
                     },
                     predictionHorizonSeconds = predictionHorizonSeconds,
+                    manualMode = manualMode,
+                    trackingPaused = trackingPaused,
+                    onTrackingPausedChange = { trackingPaused = it },
+                    autoZoomEnabled = autoZoomEnabled,
+                    autoZoomTarget = autoZoomTarget,
+                    onManualDrive = { x, y ->
+                        udpSender.send(String.format(Locale.US, "JOY:%.3f,%.3f,SEQ:%d", x, y, packetSeq++))
+                    },
                     onUnlock = { lockedId = null },
                     onTargetUpdate = { id -> lockedId = id }
                 ) { update ->
                     val seq = packetSeq++
-                    udpSender.send(String.format(Locale.US, "EX:%.4f,EY:%.4f,SEQ:%d", update.errX, update.errY, seq))
+                    // In manual mode the joystick owns the servos; the error is
+                    // still logged below, which records how the frame moves under
+                    // a known stick command.
+                    if (!manualMode) {
+                        udpSender.send(String.format(Locale.US, "EX:%.4f,EY:%.4f,SEQ:%d", update.errX, update.errY, seq))
+                    }
                     if (isLogging) {
                         logManager.log(
                             frameTimestampNanos = update.frameTimestampNanos,
@@ -497,6 +578,14 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putString(PREF_ESP32_IP, ip)
             .putInt(PREF_UDP_PORT, port)
+            .apply()
+    }
+
+    private fun saveAdvancedSettings() {
+        getSharedPreferences(ADVANCED_PREFS, MODE_PRIVATE).edit()
+            .putBoolean(PREF_MANUAL_MODE, manualMode)
+            .putBoolean(PREF_AUTO_ZOOM, autoZoomEnabled)
+            .putFloat(PREF_AUTO_ZOOM_TARGET, autoZoomTarget)
             .apply()
     }
 
@@ -559,7 +648,9 @@ class MainActivity : ComponentActivity() {
             "tripod_max_speed_offset_us" to (cfg?.maxSpeedOffsetUs?.toString() ?: "unknown (not synced)"),
             "tripod_deadzone" to (cfg?.deadzone?.toString() ?: "unknown (not synced)"),
             "tripod_min_offset_us" to (cfg?.minOffsetUs?.toString() ?: "unknown (not synced)"),
-            "tripod_slew_us_per_s" to (cfg?.slewUsPerS?.toString() ?: "unknown (not synced)")
+            "tripod_slew_us_per_s" to (cfg?.slewUsPerS?.toString() ?: "unknown (not synced)"),
+            "manual_mode" to manualMode.toString(),
+            "auto_zoom" to if (autoZoomEnabled) autoZoomTarget.toString() else "off"
         )
     }
 
@@ -615,6 +706,12 @@ fun CameraPreviewScreen(
     detectionMode: DetectionMode,
     onDetectionModeChange: (DetectionMode) -> Unit,
     predictionHorizonSeconds: Float,
+    manualMode: Boolean,
+    trackingPaused: Boolean,
+    onTrackingPausedChange: (Boolean) -> Unit,
+    autoZoomEnabled: Boolean,
+    autoZoomTarget: Float,
+    onManualDrive: (Float, Float) -> Unit,
     onUnlock: () -> Unit,
     onTargetUpdate: (Int?) -> Unit,
     onTargetDetected: (MainActivity.TrackingUpdate) -> Unit
@@ -631,11 +728,18 @@ fun CameraPreviewScreen(
     val currentLockedId by rememberUpdatedState(lockedId)
     val currentDetectionMode by rememberUpdatedState(detectionMode)
     val currentPredictionHorizon by rememberUpdatedState(predictionHorizonSeconds)
+    val currentTrackingPaused by rememberUpdatedState(trackingPaused)
+    val currentAutoZoomEnabled by rememberUpdatedState(autoZoomEnabled)
+    val currentAutoZoomTarget by rememberUpdatedState(autoZoomTarget)
+    val currentOnManualDrive by rememberUpdatedState(onManualDrive)
 
     var cameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_BACK_CAMERA) }
     var detectionResult by remember { mutableStateOf<MainActivity.DetectionResult?>(null) }
     var handOverlay by remember { mutableStateOf<MainActivity.HandOverlay?>(null) }
     var isTrackingEnabled by remember { mutableStateOf(true) }
+    // Joystick deflection in screen coordinates, each axis in [-1, 1] (right and
+    // down positive); zero when released.
+    var joystick by remember { mutableStateOf(Offset.Zero) }
     var flashMode by remember { mutableIntStateOf(ImageCapture.FLASH_MODE_OFF) }
 
     val imageCapture = remember { ImageCapture.Builder().setFlashMode(flashMode).build() }
@@ -648,14 +752,23 @@ fun CameraPreviewScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
 
-        if (isTrackingEnabled) {
+        if (isTrackingEnabled || manualMode) {
             Text(
-                text = if (lockedId != null) "LOCKED" else if (detectionResult != null) "Tracking" else "Searching",
-                color = if (lockedId != null) Color.Cyan else Color.Green,
+                text = when {
+                    manualMode -> "MANUAL"
+                    trackingPaused -> "PAUSED\nopen palm to resume"
+                    lockedId != null -> "LOCKED"
+                    detectionResult != null -> "Tracking"
+                    else -> "Searching"
+                },
+                color = if (manualMode || trackingPaused) Color.Yellow else if (lockedId != null) Color.Cyan else Color.Green,
+                textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 64.dp).align(Alignment.TopCenter),
                 style = MaterialTheme.typography.headlineSmall
             )
+        }
 
+        if (isTrackingEnabled) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 detectionResult?.let { result ->
                     val isFront = result.isFrontCamera
@@ -692,6 +805,20 @@ fun CameraPreviewScreen(
                                 size = Size(fRight - fLeft, (face.bottom - face.top) * scaleY),
                                 style = Stroke(width = 3.dp.toPx())
                             )
+                        }
+
+                        // BODY mode: the pose model's skeleton for this person.
+                        obj.skeleton?.let { joints ->
+                            val pts = joints.map { j ->
+                                j?.let { Offset(if (isFront) size.width - it.x * scaleX else it.x * scaleX, it.y * scaleY) }
+                            }
+                            POSE_CONNECTIONS.forEach { (a, b) ->
+                                val start = pts.getOrNull(a)
+                                val end = pts.getOrNull(b)
+                                if (start != null && end != null) {
+                                    drawLine(color = Color.Yellow, start = start, end = end, strokeWidth = 3.dp.toPx())
+                                }
+                            }
                         }
                     }
                 }
@@ -763,6 +890,11 @@ fun CameraPreviewScreen(
                 }
 
                 IconButton(onClick = {
+                    // A fist-paused tracker is resumed, not switched off, by a tap.
+                    if (trackingPaused) {
+                        onTrackingPausedChange(false)
+                        return@IconButton
+                    }
                     isTrackingEnabled = !isTrackingEnabled
                     if (!isTrackingEnabled) {
                         onUnlock()
@@ -784,7 +916,7 @@ fun CameraPreviewScreen(
                     Icon(
                         imageVector = if (isTrackingEnabled) Icons.Filled.TrackChanges else Icons.Filled.LocationDisabled,
                         contentDescription = "Tracking",
-                        tint = if (isTrackingEnabled) Color.Green else Color.White
+                        tint = if (!isTrackingEnabled) Color.White else if (trackingPaused) Color.Yellow else Color.Green
                     )
                 }
 
@@ -811,6 +943,34 @@ fun CameraPreviewScreen(
             battery = battery,
             modifier = Modifier.align(Alignment.TopEnd).padding(top = 72.dp, end = 16.dp)
         )
+
+        if (manualMode) {
+            Joystick(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 160.dp),
+                onMove = { joystick = it }
+            )
+
+            // Stick to tripod signs, checked on the rig with both cameras: pan is
+            // negated and tilt sent as-is, whichever camera is in use. (Unlike the
+            // tracking error, which processImageProxy negates in Y for the front
+            // camera: the stick is the operator's intent, not a position measured
+            // through a lens.)
+            LaunchedEffect(Unit) {
+                while (true) {
+                    val command = snapToAxis(joystick)
+                    currentOnManualDrive(-command.x, command.y)
+                    delay(JOYSTICK_SEND_INTERVAL_MS)
+                }
+            }
+            // Leaving manual mode (or this screen) with the stick held: stop now
+            // rather than after the firmware's loss-of-signal timeout.
+            DisposableEffect(Unit) {
+                onDispose {
+                    joystick = Offset.Zero
+                    currentOnManualDrive(0f, 0f)
+                }
+            }
+        }
 
         Row(
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).fillMaxWidth(),
@@ -861,6 +1021,8 @@ fun CameraPreviewScreen(
             // and closed on that same thread.
             var ballDetector: BallDetector? = null
             var personDetector: BallDetector? = null
+            var poseLandmarker: PoseLandmarker? = null
+            var poseLandmarkerFailed = false
             // Set (on the executor) once this effect is torn down. A frame already
             // queued for this effect's analyzer can still run after the close task,
             // and calling detect() on a closed MediaPipe detector is a native
@@ -896,8 +1058,36 @@ fun CameraPreviewScreen(
                 personDetector
             }
 
+            val getPoseLandmarker: () -> PoseLandmarker? = {
+                if (poseLandmarker == null && !poseLandmarkerFailed && !detectorsClosed) {
+                    try {
+                        val options = PoseLandmarker.PoseLandmarkerOptions.builder()
+                            .setBaseOptions(BaseOptions.builder().setModelAssetPath(POSE_MODEL_ASSET).build())
+                            .setRunningMode(RunningMode.IMAGE)
+                            .setNumPoses(MAX_POSES)
+                            .build()
+                        poseLandmarker = PoseLandmarker.createFromOptions(context, options)
+                    } catch (e: Exception) {
+                        // Not retried every frame; BODY mode runs on the COCO
+                        // person detector alone for this camera session.
+                        poseLandmarkerFailed = true
+                        Log.e("CamX", "Pose landmarker init failed: ${e.message}")
+                    }
+                }
+                poseLandmarker
+            }
+
             var frameCounter = 0
             var lostFrameCount = 0
+            val gestureTrigger = GestureTrigger()
+            var lastGestureRecordMs = 0L
+
+            // Auto zoom state. All of it lives and dies with this camera binding:
+            // CameraX resets the zoom to 1x whenever the camera is rebound.
+            var camera: Camera? = null
+            val autoZoom = AutoZoomController()
+            var zoomRatio = 1f
+            var lastZoomFrameNanos = 0L
             val imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
@@ -910,6 +1100,7 @@ fun CameraPreviewScreen(
                             faceDetector,
                             getBallDetector,
                             getPersonDetector,
+                            getPoseLandmarker,
                             colorBallDetector,
                             ballTracker,
                             personTracker,
@@ -922,20 +1113,84 @@ fun CameraPreviewScreen(
                             currentPredictionHorizon,
                             currentLockedId,
                             lostFrameCount,
-                            // Skip the (expensive: JPEG round-trip + inference) hand
-                            // landmark pass entirely once a target is locked -- its only
-                            // consumers (the skeleton overlay and the open-palm lock
-                            // gesture) are both gated on lockedId == null already, so
-                            // running it while locked only steals executor time from
-                            // the per-frame tracking pipeline and adds latency to the
-                            // servo correction.
-                            frameCounter % 5 == 0 && currentLockedId == null,
+                            currentTrackingPaused,
+                            // The hand pass (bitmap conversion + inference) takes
+                            // executor time from the tracking pipeline, so it runs
+                            // on a fraction of the frames -- fewer once locked,
+                            // when it only has to catch a gesture command.
+                            frameCounter % (if (currentLockedId == null) HAND_CHECK_INTERVAL_UNLOCKED else HAND_CHECK_INTERVAL_LOCKED) == 0,
                             onTargetUpdate,
                             onLostFrameCountChanged = { lostFrameCount = it }
                         ) { update, result ->
                             onTargetDetected(update)
+
+                            val zoomState = camera?.cameraInfo?.zoomState?.value
+                            if (zoomState != null) {
+                                val widest = maxOf(1f, zoomState.minZoomRatio)
+                                val wanted = if (currentAutoZoomEnabled) {
+                                    val dt = if (lastZoomFrameNanos == 0L) 0f else (update.frameTimestampNanos - lastZoomFrameNanos) / 1e9f
+                                    // result.objects holds only the target (or nothing).
+                                    val box = result.objects.firstOrNull()?.boundingBox
+                                    val halfW = result.imageWidth / 2f
+                                    val halfH = result.imageHeight / 2f
+                                    autoZoom.update(
+                                        subjectFraction = box?.let { maxOf(it.width() / (2f * halfW), it.height() / (2f * halfH)) },
+                                        edgeExtent = box?.let {
+                                            maxOf(
+                                                abs(it.left - halfW) / halfW, abs(it.right - halfW) / halfW,
+                                                abs(it.top - halfH) / halfH, abs(it.bottom - halfH) / halfH
+                                            )
+                                        } ?: 0f,
+                                        targetFraction = currentAutoZoomTarget,
+                                        currentRatio = zoomRatio,
+                                        minRatio = widest,
+                                        maxRatio = minOf(AUTO_ZOOM_MAX_RATIO, zoomState.maxZoomRatio),
+                                        dtSeconds = dt
+                                    )
+                                } else {
+                                    widest // switched off: back to the normal view
+                                }
+                                lastZoomFrameNanos = update.frameTimestampNanos
+                                if (abs(wanted - zoomRatio) > 0.002f) {
+                                    zoomRatio = wanted
+                                    camera?.cameraControl?.setZoomRatio(wanted)
+                                }
+                            }
                             detectionResult = if (result.objects.isEmpty()) null else result
                             if (result.handChecked) {
+                                // Gesture commands. (The open palm also picks the
+                                // subject to lock, in processImageProxy.)
+                                when (gestureTrigger.update(result.gesture)) {
+                                    HandGesture.FIST -> if (!currentTrackingPaused) {
+                                        onUnlock()
+                                        onTrackingPausedChange(true)
+                                    }
+                                    HandGesture.OPEN_PALM -> onTrackingPausedChange(false)
+                                    HandGesture.VICTORY -> {
+                                        val now = SystemClock.elapsedRealtime()
+                                        if (now - lastGestureRecordMs > GESTURE_RECORD_COOLDOWN_MS) {
+                                            lastGestureRecordMs = now
+                                            val recording = activeRecording
+                                            if (recording != null) {
+                                                recording.stop()
+                                                activeRecording = null
+                                            } else {
+                                                try {
+                                                    activeRecording = startVideoRecording(context, videoCapture, executor)
+                                                } catch (e: Exception) {
+                                                    Log.e("CamX", "Gesture recording start failed: ${e.message}")
+                                                }
+                                            }
+                                            Toast.makeText(
+                                                context,
+                                                if (activeRecording != null) "Recording started" else "Recording stopped",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                    else -> {}
+                                }
+
                                 handOverlay = if (result.handLandmarks.size >= 21) {
                                     MainActivity.HandOverlay(
                                         landmarks = result.handLandmarks,
@@ -952,12 +1207,12 @@ fun CameraPreviewScreen(
 
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, imageAnalyzer, imageCapture, videoCapture)
+                camera = cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, imageAnalyzer, imageCapture, videoCapture)
             } catch (exc: Exception) {
                 Log.e("CameraX", "Full use-case binding failed, retrying without video capture", exc)
                 try {
                     cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, imageAnalyzer, imageCapture)
+                    camera = cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, imageAnalyzer, imageCapture)
                 } catch (exc2: Exception) {
                     Log.e("CameraX", "Binding failed even without video capture", exc2)
                 }
@@ -977,9 +1232,74 @@ fun CameraPreviewScreen(
                     ballDetector = null
                     personDetector?.close()
                     personDetector = null
+                    poseLandmarker?.close()
+                    poseLandmarker = null
                 }
             }
         }
+    }
+}
+
+/**
+ * Keeps a mostly-sideways push from also tilting (and a mostly-vertical one from
+ * panning): the smaller axis is dropped unless the stick is within about 30
+ * degrees of a diagonal. Needed because the tripod's slowest speed is not slow
+ * (the servo dead-band jump), so even a slight off-axis deflection moves the
+ * other axis visibly.
+ */
+private fun snapToAxis(stick: Offset): Offset {
+    val ax = abs(stick.x)
+    val ay = abs(stick.y)
+    return when {
+        ay < JOYSTICK_AXIS_SNAP * ax -> Offset(stick.x, 0f)
+        ax < JOYSTICK_AXIS_SNAP * ay -> Offset(0f, stick.y)
+        else -> stick
+    }
+}
+
+/**
+ * On-screen joystick for manual mode. Reports the thumb position through
+ * [onMove] with each axis in [-1, 1] (right and down positive), and springs back
+ * to zero when the finger lifts.
+ */
+@Composable
+fun Joystick(modifier: Modifier = Modifier, onMove: (Offset) -> Unit) {
+    var thumb by remember { mutableStateOf(Offset.Zero) }
+    val currentOnMove by rememberUpdatedState(onMove)
+
+    Canvas(
+        modifier = modifier.size(150.dp).pointerInput(Unit) {
+            awaitEachGesture {
+                // The thumb travels 60% of the pad radius, so full deflection is
+                // reached before the finger leaves the pad.
+                val centre = Offset(size.width / 2f, size.height / 2f)
+                val travel = size.width / 2f * 0.6f
+                fun moveTo(position: Offset) {
+                    var v = (position - centre) / travel
+                    val length = v.getDistance()
+                    if (length > 1f) v /= length
+                    thumb = v
+                    currentOnMove(v)
+                }
+
+                val down = awaitFirstDown()
+                moveTo(down.position)
+                down.consume()
+                while (true) {
+                    val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                    if (change == null || !change.pressed) break
+                    moveTo(change.position)
+                    change.consume()
+                }
+                thumb = Offset.Zero
+                currentOnMove(Offset.Zero)
+            }
+        }
+    ) {
+        val radius = size.minDimension / 2f
+        drawCircle(color = Color.Black.copy(alpha = 0.35f), radius = radius)
+        drawCircle(color = Color.White.copy(alpha = 0.7f), radius = radius, style = Stroke(width = 2.dp.toPx()))
+        drawCircle(color = Color.White.copy(alpha = 0.85f), radius = radius * 0.4f, center = center + thumb * (radius * 0.6f))
     }
 }
 
@@ -1067,6 +1387,12 @@ fun ConnectionScreen(
     currentPort: Int,
     isLogging: Boolean,
     onToggleLogging: (Boolean) -> Unit,
+    manualMode: Boolean,
+    onManualModeChange: (Boolean) -> Unit,
+    autoZoomEnabled: Boolean,
+    onAutoZoomEnabledChange: (Boolean) -> Unit,
+    autoZoomTarget: Float,
+    onAutoZoomTargetChange: (Float) -> Unit,
     onConnect: (String, Int) -> Unit,
     onTest: (String, Int, String) -> Unit
 ) {
@@ -1075,7 +1401,8 @@ fun ConnectionScreen(
     var testMessage by remember { mutableStateOf("PING") }
 
     Column(
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState()).padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text("Tripod Connection", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground)
@@ -1135,6 +1462,50 @@ fun ConnectionScreen(
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                Text("Advanced Settings", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                AdvancedSwitchRow(
+                    title = "Manual joystick",
+                    description = "Aim the tripod with an on-screen joystick. Tracking does not drive the tripod while this is on.",
+                    checked = manualMode,
+                    onCheckedChange = onManualModeChange
+                )
+                AdvancedSwitchRow(
+                    title = "Auto zoom",
+                    description = "Zoom in and out to keep the subject the same size in the frame.",
+                    checked = autoZoomEnabled,
+                    onCheckedChange = onAutoZoomEnabledChange
+                )
+                if (autoZoomEnabled) {
+                    Text(
+                        "Subject size: ${(autoZoomTarget * 100).toInt()}% of the frame",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Slider(value = autoZoomTarget, onValueChange = onAutoZoomTargetChange, valueRange = 0.1f..0.8f)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdvancedSwitchRow(title: String, description: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
@@ -1143,6 +1514,7 @@ private fun processImageProxy(
     faceDetector: FaceDetector,
     getBallDetector: () -> BallDetector?,
     getPersonDetector: () -> BallDetector?,
+    getPoseLandmarker: () -> PoseLandmarker?,
     colorBallDetector: ColorBallDetector,
     ballTracker: BallTracker,
     personTracker: BallTracker,
@@ -1155,6 +1527,7 @@ private fun processImageProxy(
     predictionHorizonSeconds: Float,
     lockedId: Int?,
     lostFrameCount: Int,
+    paused: Boolean,
     shouldDetectHands: Boolean,
     onSetLockedId: (Int?) -> Unit,
     onLostFrameCountChanged: (Int) -> Unit,
@@ -1175,6 +1548,7 @@ private fun processImageProxy(
         var palmX = 0f
         var palmY = 0f
         var handLandmarks: List<Offset> = emptyList()
+        var gesture = HandGesture.NONE
 
         // Upright RGB copy of the frame for the MediaPipe models (hand landmarker
         // and ball detector). Lazy so it's built at most once per frame, and not
@@ -1194,9 +1568,8 @@ private fun processImageProxy(
                         // Keep the full 21-point skeleton (normalized) for the
                         // overlay, regardless of pose.
                         handLandmarks = hand.map { Offset(it.x(), it.y()) }
-                        val isExtended = hand[8].y() < hand[6].y() && hand[12].y() < hand[10].y() &&
-                                        hand[16].y() < hand[14].y() && hand[20].y() < hand[18].y()
-                        if (isExtended) {
+                        gesture = classifyHandGesture(hand.map { HandPoint(it.x() * frameWidth, it.y() * frameHeight) })
+                        if (gesture == HandGesture.OPEN_PALM) {
                             openPalmDetected = true
                             palmX = hand[9].x() * frameWidth
                             palmY = hand[9].y() * frameHeight
@@ -1240,29 +1613,52 @@ private fun processImageProxy(
                 Log.e("CamX", "Ball detection error: ${e.message}")
                 Tasks.forException(e)
             }
-            // Whole-body boxes from the COCO "person" class. Like BALL, this is a
-            // per-frame detector with no IDs, so a BallTracker (generic box
-            // tracker) supplies them for lock-on and coasting. The person
-            // detector runs synchronously here on the executor (MediaPipe must
-            // stay on this thread); ML Kit faces are then matched to each body
-            // to aim at the upper body -- see bodyAimPoint().
+            // People, from the pose model first: it detects persons only and
+            // gives body landmarks, so the aim point sits on the torso and the
+            // skeleton can be drawn. On frames where it finds no one (typically a
+            // subject too small in frame for it), the COCO "person" class takes
+            // over, with ML Kit faces matched to each body to aim at the upper
+            // body -- see bodyAimPoint(). Either way these are per-frame
+            // detections with no IDs, so a BallTracker (generic box tracker)
+            // supplies them for lock-on and coasting; both run synchronously
+            // here on the executor (MediaPipe must stay on this thread).
             DetectionMode.BODY -> try {
-                val detector = getPersonDetector() ?: throw IllegalStateException("Person detector unavailable")
-                val boxes = detector.detect(BitmapImageBuilder(uprightBitmap).build()).detections().map { d ->
-                    val b = d.boundingBox()
-                    BallBox(b.left.toInt(), b.top.toInt(), b.right.toInt(), b.bottom.toInt())
+                val mpImage = BitmapImageBuilder(uprightBitmap).build()
+                val poses = getPoseLandmarker()?.detect(mpImage)?.landmarks().orEmpty().mapNotNull { pose ->
+                    poseToBody(
+                        pose.map { PosePoint(it.x() * frameWidth, it.y() * frameHeight, it.visibility().orElse(0f)) },
+                        frameWidth, frameHeight
+                    )
                 }
-                val bodies = personTracker.update(boxes)
-                faceDetector.process(image).continueWith { t ->
-                    val faces = if (t.isSuccessful) t.result.map { it.boundingBox } else emptyList()
-                    bodies.map { (box, id) ->
-                        val body = Rect(box.left, box.top, box.right, box.bottom)
-                        // Largest face whose centre lies inside this body box.
-                        val face = faces
-                            .filter { body.contains(it.centerX(), it.centerY()) }
-                            .maxByOrNull { it.width().toLong() * it.height().toLong() }
-                        val (aimX, aimY) = bodyAimPoint(body, face)
-                        MainActivity.DetectedObjectInfo(body, id, label = "Person", aimX = aimX, aimY = aimY, faceBox = face)
+                if (poses.isNotEmpty()) {
+                    // update() returns the boxes in the order given.
+                    val ids = personTracker.update(poses.map { it.box }).map { it.second }
+                    Tasks.forResult(poses.zip(ids) { pose, id ->
+                        val box = pose.box
+                        MainActivity.DetectedObjectInfo(
+                            Rect(box.left, box.top, box.right, box.bottom), id, label = "Person",
+                            aimX = pose.aimX, aimY = pose.aimY,
+                            skeleton = pose.skeleton.map { p -> p?.let { Offset(it.x, it.y) } }
+                        )
+                    })
+                } else {
+                    val detector = getPersonDetector() ?: throw IllegalStateException("Person detector unavailable")
+                    val boxes = detector.detect(mpImage).detections().map { d ->
+                        val b = d.boundingBox()
+                        BallBox(b.left.toInt(), b.top.toInt(), b.right.toInt(), b.bottom.toInt())
+                    }
+                    val bodies = personTracker.update(boxes)
+                    faceDetector.process(image).continueWith { t ->
+                        val faces = if (t.isSuccessful) t.result.map { it.boundingBox } else emptyList()
+                        bodies.map { (box, id) ->
+                            val body = Rect(box.left, box.top, box.right, box.bottom)
+                            // Largest face whose centre lies inside this body box.
+                            val face = faces
+                                .filter { body.contains(it.centerX(), it.centerY()) }
+                                .maxByOrNull { it.width().toLong() * it.height().toLong() }
+                            val (aimX, aimY) = bodyAimPoint(body, face)
+                            MainActivity.DetectedObjectInfo(body, id, label = "Person", aimX = aimX, aimY = aimY, faceBox = face)
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -1298,7 +1694,8 @@ private fun processImageProxy(
                             it.boundingBox,
                             it.trackingId,
                             isLocked = it.trackingId == lockedId,
-                            faceBox = it.faceBox
+                            faceBox = it.faceBox,
+                            skeleton = it.skeleton
                         )
                     )
                 } ?: emptyList()
@@ -1327,14 +1724,16 @@ private fun processImageProxy(
                 val predictedX: Float
                 val predictedY: Float
 
-                if (targetObject != null) {
+                // Paused by the fist gesture: the subject is still found and drawn,
+                // but falls through to the hold-still branch below.
+                if (targetObject != null && !paused) {
                     rawX = targetObject.aimX ?: targetObject.boundingBox.exactCenterX()
                     rawY = targetObject.aimY ?: targetObject.boundingBox.exactCenterY()
                     filteredX = kalmanFilterX.update(rawX, imageProxy.imageInfo.timestamp)
                     filteredY = kalmanFilterY.update(rawY, imageProxy.imageInfo.timestamp)
                     predictedX = kalmanFilterX.predictFuture(predictionHorizonSeconds)
                     predictedY = kalmanFilterY.predictFuture(predictionHorizonSeconds)
-                } else if (coasting) {
+                } else if (coasting && !paused) {
                     rawX = Float.NaN
                     rawY = Float.NaN
                     filteredX = if (kalmanFilterX.hasEstimate) kalmanFilterX.position else frameWidth / 2f
@@ -1397,7 +1796,8 @@ private fun processImageProxy(
                     imageHeight = frameHeight,
                     isFrontCamera = isFrontCamera,
                     handLandmarks = handLandmarks,
-                    handChecked = shouldDetectHands
+                    handChecked = shouldDetectHands,
+                    gesture = gesture
                 )
                 onResult(update, result)
             }
