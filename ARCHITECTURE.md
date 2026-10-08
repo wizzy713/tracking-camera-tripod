@@ -65,7 +65,7 @@ Data transmission to the ESP32 tripod is handled via UDP.
 
 ### Manual joystick: `JOY` protocol
 
-With "Manual joystick" on (Settings -> Advanced Settings), the camera screen shows an on-screen joystick and the app sends `"JOY:[FLOAT],[FLOAT],SEQ:[UINT]"` every 33 ms in place of the `EX`/`EY` packets. The signs were set on the rig and are the same for both cameras: stick X is negated, stick Y sent as-is. The smaller stick axis is dropped unless the stick is within about 30 degrees of a diagonal (`snapToAxis`), so a sideways push does not also tilt. The firmware drives the servos open loop from it -- see "Manual joystick drive" in `firmware/README.md`. Detection keeps running, and CSV logging still records the tracking error, which gives the frame's response to a known stick command.
+With "Manual joystick" on (Settings -> Advanced Settings), the camera screen shows an on-screen joystick and the app sends `"JOY:[FLOAT],[FLOAT],SEQ:[UINT]"` every 33 ms in place of the `EX`/`EY` packets. The signs were set on the rig and are the same for both cameras: both stick axes are negated before sending. The smaller stick axis is dropped unless the stick is within about 30 degrees of a diagonal (`snapToAxis`), so a sideways push does not also tilt. The firmware drives the servos open loop from it -- see "Manual joystick drive" in `firmware/README.md`. Detection keeps running, and CSV logging still records the tracking error, which gives the frame's response to a known stick command.
 
 ### Auto zoom
 

@@ -950,15 +950,14 @@ fun CameraPreviewScreen(
                 onMove = { joystick = it }
             )
 
-            // Stick to tripod signs, checked on the rig with both cameras: pan is
-            // negated and tilt sent as-is, whichever camera is in use. (Unlike the
-            // tracking error, which processImageProxy negates in Y for the front
-            // camera: the stick is the operator's intent, not a position measured
-            // through a lens.)
+            // Stick to tripod signs, set on the rig and the same for both cameras:
+            // both axes are negated relative to the tracking-error convention the
+            // JOY packet uses (stick right or up sends what a subject left of or
+            // below centre would).
             LaunchedEffect(Unit) {
                 while (true) {
                     val command = snapToAxis(joystick)
-                    currentOnManualDrive(-command.x, command.y)
+                    currentOnManualDrive(-command.x, -command.y)
                     delay(JOYSTICK_SEND_INTERVAL_MS)
                 }
             }
