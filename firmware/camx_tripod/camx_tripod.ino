@@ -157,11 +157,12 @@ const float MAX_INTEGRAL = 1.0f;          // Anti-windup clamp on the accumulate
 // The SATURATION_* guard below will stop the motors (not spin forever) if this
 // is still wrong, but fix the sign -- don't rely on the guard.
 const int PAN_DIR  = -1;
-int TILT_DIR = +1;         // Flipped to -1 on 2026-10-01, back to +1 on 2026-10-06: until the servo
-                           // dead-band compensation (MIN_OFFSET_US) went in, the tilt servo rarely
-                           // got a pulse big enough to move, so its direction was never properly
-                           // tested. With compensation at 45 us it moved, and -1 drove it AWAY from
-                           // the ball. RUNTIME-TUNABLE so a wrong guess needs no reflash: Serial
+int TILT_DIR = -1;         // History: -1 on 2026-10-01, +1 on 2026-10-06 (pendulum calibration, where
+                           // -1 drove the camera AWAY from the ball), back to -1 on 2026-10-08 after
+                           // auto tracking tilted away from the subject on both cameras. The sign
+                           // depends on which way round the tilt servo sits in the mount, so re-check
+                           // it (step 4 above) whenever the tilt stage is reassembled.
+                           // RUNTIME-TUNABLE so a wrong guess needs no reflash: Serial
                            // "TD1" / "TD-1", UDP "CFG:...,TD:<1|-1>" (not kept across a reboot).
 
 // Manual joystick drive ("JOY:" packets, see updateManual). Full stick commands
@@ -438,6 +439,13 @@ void loop() {
       announceTripod();
       continue;
     }
+    // Config is handled per packet for the same reason: with error or joystick
+    // packets arriving at 30 Hz, a CFG that shared a drain with a later one was
+    // silently dropped (and the app never got its reply).
+    if (strncmp(packetBuffer, "CFG", 3) == 0) {
+      handleConfigPacket(String(packetBuffer));
+      continue;
+    }
 
     memcpy(latestPacket, packetBuffer, len + 1);
     latestLen = len;
@@ -453,9 +461,7 @@ void loop() {
     int eyIndex = payload.indexOf(",EY:");
     int seqIndex = payload.indexOf(",SEQ:");
 
-    if (payload.startsWith("CFG")) {
-      handleConfigPacket(payload);
-    } else if (payload.startsWith("JOY:")) {
+    if (payload.startsWith("JOY:")) {
       int comma = payload.indexOf(',');
       if (comma != -1) {
         float joyX = payload.substring(4, comma).toFloat();
