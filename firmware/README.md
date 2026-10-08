@@ -81,6 +81,18 @@ That PID output is a *target*: the pulse actually written ramps toward it at no 
 `MAX_SLEW_US_PER_S` (default 1000 us/s), so speed changes and direction reversals are
 gradual instead of instant. The failsafe and divergence-guard stops skip the ramp.
 
+### Manual joystick drive: `JOY` (app -> firmware)
+With "Manual joystick" switched on in the app's Advanced Settings, the app sends
+`JOY:x,y,SEQ:value` at about 30 Hz instead of `EX`/`EY`. `x` and `y` are the stick deflection
+in `[-1, 1]`, with the same sign convention as the tracking error (positive `x` pans the way
+a subject right of centre would, positive `y` tilts the way a subject below centre would).
+
+This is open loop: `updateManual()` bypasses the PID and the divergence guard and maps
+deflection straight to a speed, `offset_us = +/-(MIN_OFFSET_US + |v| * JOY_SPEED_RANGE_US)`,
+so the stick starts at the edge of the servo dead band. Inside `JOY_DEADZONE` (0.08) the
+axis stops. The slew limit and the loss-of-signal failsafe apply as for tracking, and `SEQ`
+shares the tracking packets' counter.
+
 ### Power-safety limits and disconnect diagnosis
 
 The servos share the 5 V regulator with the ESP32-C6. A servo slammed from full speed one
