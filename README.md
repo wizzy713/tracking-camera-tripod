@@ -4,12 +4,15 @@ CamX is a technical Android application designed to interface with motorized tri
 
 ## System Features
 
-- Dual Detection Modes: Face detection (default) or a generic Object detector, toggled per-session (see note below -- neither is person-specific).
-- Open Palm Gesture Locking: Raise an open palm to lock the tracker onto the nearest detected subject in a crowd.
+- Three Detection Modes: Face (default), whole Body (MediaPipe pose model, with a skeleton overlay) or Ball, toggled per-session.
+- Hand Gestures: Raise an open palm to lock the tracker onto the nearest detected subject in a crowd (or resume), a closed fist to stop auto tracking, a victory sign to start/stop recording. Each can be switched off in Advanced Settings.
 - Predictive Tracking: Implements a 1D Kalman Filter (one instance per axis) to estimate subject velocity and predict trajectory coordinates.
 - Resolution-Independent Localization: Transmits a normalized X/Y error in [-1, 1] to the hardware layer, decoupled from camera resolution and orientation.
 - Connectivity: Manual IP/port configuration to link with tripod hardware on the local Wi-Fi network.
-- Diagnostic Tools: Includes connection testing with custom payloads and telemetry logging in CSV format.
+- Manual Joystick (Advanced Settings): An on-screen joystick drives pan/tilt directly, for framing a shot or testing the rig without a subject.
+- Auto Zoom (Advanced Settings): Adjusts the camera zoom to keep the tracked subject at a chosen size in the frame.
+- Experiment Tab: Live-tunes the firmware's PID gains and the app's Kalman filter/prediction horizon against a running rig, and labels CSV logging sessions with test metadata -- see [TESTING.md](./TESTING.md) for suggested experiments.
+- Diagnostic Tools: Includes connection testing with custom payloads and telemetry logging in CSV format, including per-frame tracking error (`ErrX`/`ErrY`).
 - Battery Readout: The tripod's INA219 fuel gauge streams pack state of charge back over the same UDP link; the camera screen shows a live battery indicator (%, voltage, colour-coded).
 - Comprehensive Camera Control: Provides high-resolution photo capture, video recording with audio, and hardware flip capabilities.
 
@@ -18,15 +21,15 @@ CamX is a technical Android application designed to interface with motorized tri
 ### 1. Localization Algorithm
 The localization process follows a multi-stage pipeline:
 - Frame Acquisition: Frames are captured via CameraX; analysis resolution is device-dependent (not pinned).
-- Subject Identification: Google ML Kit locates the subject via one of two selectable modes -- Face Detection (default) or generic Object Detection (a non-person-specific detector, useful for subjects a face detector can't see, e.g. the pendulum test in TESTING.md) -- see ARCHITECTURE.md.
-- Gesture Recognition: MediaPipe Hand Landmarker identifies an open palm gesture to initiate subject locking.
+- Subject Identification: One of three selectable modes locates the subject -- ML Kit Face Detection (default), whole-body detection (MediaPipe Pose Landmarker, falling back to the EfficientDet-Lite0 COCO model filtered to "person"), or Ball Detection (colour segmentation, falling back to the same COCO model filtered to "sports ball"; used for the pendulum test in TESTING.md) -- see ARCHITECTURE.md.
+- Gesture Recognition: MediaPipe Hand Landmarker identifies an open palm (lock/resume), a closed fist (stop tracking) and a victory sign (record).
 - Normalized Error Calculation: The bounding box center is converted to a normalized X/Y error in [-1, 1] relative to frame center, in the rotation-corrected upright frame.
 - Trajectory Estimation: A Kalman Filter per axis processes the coordinates to filter noise and predict the subject's position a configurable horizon (~200ms default) into the future -- live-tunable, along with the filter's noise constants, from the Experiment tab.
 
 ### 2. Communication Protocol
 - Hardware Link: UDP (User Datagram Protocol) is utilized for minimum latency transmission.
 - Payload Format: "EX:[FLOAT],EY:[FLOAT],SEQ:[UINT]" -- normalized error per axis plus a sequence number for loss/reorder detection.
-- Reverse Telemetry: The firmware replies on the same socket with "BATT:[%],MV:[mV],MA:[mA],WH:[Wh]" every ~2s for the on-screen battery indicator.
+- Reverse Telemetry: The firmware replies on the same socket with "BATT:[%],MV:[mV],MA:[mA],WH:[Wh]" every ~2s for the on-screen battery indicator, and with "CFG:KP:...,KI:...,KD:...,MS:...,DZ:..." immediately after any PID-gain set/query from the Experiment tab.
 - Configuration: The IP address and port of the ESP32 are entered manually in the connection settings.
 
 ## Project Structure
@@ -42,12 +45,12 @@ The localization process follows a multi-stage pipeline:
 - Hardware: ESP32-based microcontroller with servo motor integration, plus an INA219 sensor on the battery for charge monitoring. See [firmware folder](./firmware) for details.
 - Network: Android device and ESP32 must reside on the same subnet.
 - Configuration: Tripod parameters (IP and Port) are managed via the in-app connection settings.
-- AI Assets: Ensure hand_landmarker.task is present in the assets folder.
+- AI Assets: Ensure hand_landmarker.task, pose_landmarker_lite.task and efficientdet_lite0.tflite are present in the assets folder.
 
 ## Dependencies
 
 - Android Jetpack CameraX (v1.4.1)
-- Google ML Kit Face Detection + Object Detection
+- Google ML Kit Face Detection; MediaPipe Object Detector (ball mode)
 - MediaPipe Tasks Vision (v0.10.14)
 - Android Jetpack Compose (Material 3)
 - Kotlin Coroutines for asynchronous processing

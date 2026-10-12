@@ -17,7 +17,7 @@ import java.util.Locale
 // Mirrors the .ino's shipped defaults (camx_tripod.ino) -- shown until the first
 // CFG reply arrives from the tripod (see MainActivity.tripodConfig).
 private val UNSYNCED_DEFAULT_CONFIG = TripodConfig(
-    kp = 110f, ki = 50f, kd = 5f, maxSpeedOffsetUs = 220f, deadzone = 0.03f
+    kp = 18f, ki = 0f, kd = 0f, maxSpeedOffsetUs = 300f, deadzone = 0.03f, minOffsetUs = 52f
 )
 
 /**
@@ -31,6 +31,9 @@ fun ExperimentScreen(
     tripodConfig: TripodConfig?,
     onApplyPid: (TripodConfig) -> Unit,
     onSyncFromTripod: () -> Unit,
+    modeProfile: ModeProfile,
+    onFilterTuningChanged: () -> Unit,
+    onResetModeProfile: () -> Unit,
     kalmanFilterX: KalmanFilter,
     kalmanFilterY: KalmanFilter,
     predictionHorizonSeconds: Float,
@@ -52,6 +55,20 @@ fun ExperimentScreen(
     var kd by remember { mutableFloatStateOf(tripodConfig?.kd ?: UNSYNCED_DEFAULT_CONFIG.kd) }
     var maxSpeedOffsetUs by remember { mutableFloatStateOf(tripodConfig?.maxSpeedOffsetUs ?: UNSYNCED_DEFAULT_CONFIG.maxSpeedOffsetUs) }
     var deadzone by remember { mutableFloatStateOf(tripodConfig?.deadzone ?: UNSYNCED_DEFAULT_CONFIG.deadzone) }
+    var minOffsetUs by remember { mutableFloatStateOf(tripodConfig?.minOffsetUs ?: UNSYNCED_DEFAULT_CONFIG.minOffsetUs) }
+
+    // Selecting a detection mode (or resetting it) loads that mode's saved
+    // gains, shown at once even if the tripod is not connected to echo them.
+    // Keyed on the gains only, so moving a filter slider (which also saves the
+    // profile) does not throw away gain sliders that have not been applied yet.
+    LaunchedEffect(modeProfile.toTripodConfig()) {
+        kp = modeProfile.kp
+        ki = modeProfile.ki
+        kd = modeProfile.kd
+        maxSpeedOffsetUs = modeProfile.maxSpeedOffsetUs
+        deadzone = modeProfile.deadzone
+        minOffsetUs = modeProfile.minOffsetUs
+    }
 
     // Any CFG reply (an "Apply" echo or a "Sync" query response) re-seeds the
     // sliders, so the UI always reflects what the tripod actually has -- e.g.
@@ -63,11 +80,12 @@ fun ExperimentScreen(
             kd = it.kd
             maxSpeedOffsetUs = it.maxSpeedOffsetUs
             deadzone = it.deadzone
+            minOffsetUs = it.minOffsetUs
         }
     }
 
-    var measurementNoise by remember { mutableFloatStateOf(kalmanFilterX.measurementNoise) }
-    var accelerationNoise by remember { mutableFloatStateOf(kalmanFilterX.accelerationNoise) }
+    var measurementNoise by remember(modeProfile) { mutableFloatStateOf(kalmanFilterX.measurementNoise) }
+    var accelerationNoise by remember(modeProfile) { mutableFloatStateOf(kalmanFilterX.accelerationNoise) }
 
     Column(
         modifier = Modifier
@@ -77,7 +95,14 @@ fun ExperimentScreen(
             .padding(16.dp)
     ) {
         Text("Experiment", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground)
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "Tuning is saved per detection mode. You are editing ${detectionMode.name}: \"Apply to Tripod\" and " +
+                "the filter sliders save to it, and it is loaded again whenever ${detectionMode.name} is selected.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(modifier = Modifier.height(12.dp))
 
         SectionCard(title = "Tripod PID Gains") {
             if (tripodConfig == null) {
@@ -89,17 +114,19 @@ fun ExperimentScreen(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            GainSlider("KP", kp, 0f..300f) { kp = it }
-            GainSlider("KI", ki, 0f..150f) { ki = it }
-            GainSlider("KD", kd, 0f..50f) { kd = it }
+            // KP/KI/KD maxima match the firmware's KP_LIMIT/KI_LIMIT/KD_LIMIT power-safety caps.
+            GainSlider("KP", kp, 0f..200f) { kp = it }
+            GainSlider("KI", ki, 0f..100f) { ki = it }
+            GainSlider("KD", kd, 0f..20f) { kd = it }
             GainSlider("MAX_SPEED_OFFSET_US", maxSpeedOffsetUs, 10f..400f, decimals = 0) { maxSpeedOffsetUs = it }
             GainSlider("DEADZONE", deadzone, 0f..0.2f, decimals = 3) { deadzone = it }
+            GainSlider("MIN_OFFSET_US (servo dead band)", minOffsetUs, 0f..80f, decimals = 0) { minOffsetUs = it }
 
             Spacer(modifier = Modifier.height(8.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 Button(onClick = onSyncFromTripod) { Text("Sync from Tripod") }
                 Button(onClick = {
-                    onApplyPid(TripodConfig(kp, ki, kd, maxSpeedOffsetUs, deadzone))
+                    onApplyPid(TripodConfig(kp, ki, kd, maxSpeedOffsetUs, deadzone, minOffsetUs))
                 }) { Text("Apply to Tripod") }
             }
         }
@@ -111,11 +138,13 @@ fun ExperimentScreen(
                 measurementNoise = it
                 kalmanFilterX.measurementNoise = it
                 kalmanFilterY.measurementNoise = it
+                onFilterTuningChanged()
             }
             GainSlider("Acceleration noise σₐ", accelerationNoise, 1f..500f, decimals = 0) {
                 accelerationNoise = it
                 kalmanFilterX.accelerationNoise = it
                 kalmanFilterY.accelerationNoise = it
+                onFilterTuningChanged()
             }
             GainSlider("Prediction horizon (s)", predictionHorizonSeconds, 0f..0.5f, decimals = 3) {
                 onPredictionHorizonChange(it)
@@ -132,14 +161,26 @@ fun ExperimentScreen(
                     label = { Text("Face") }
                 )
                 FilterChip(
-                    selected = detectionMode == DetectionMode.OBJECT,
-                    onClick = { onDetectionModeChange(DetectionMode.OBJECT) },
-                    label = { Text("Object") }
+                    selected = detectionMode == DetectionMode.BODY,
+                    onClick = { onDetectionModeChange(DetectionMode.BODY) },
+                    label = { Text("Body") }
+                )
+                FilterChip(
+                    selected = detectionMode == DetectionMode.BALL,
+                    onClick = { onDetectionModeChange(DetectionMode.BALL) },
+                    label = { Text("Ball") }
                 )
             }
             Spacer(modifier = Modifier.height(4.dp))
+            OutlinedButton(onClick = onResetModeProfile, modifier = Modifier.fillMaxWidth()) {
+                Text("Reset ${detectionMode.name} tuning to defaults")
+            }
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
-                "Object mode tracks any prominent object (unlabeled) instead of a face -- " +
+                "Body mode tracks the whole person (pose model, falling back to the COCO \"person\" class), so it keeps " +
+                    "following when the subject turns away from the camera. " +
+                    "Ball mode tracks a yellow tennis ball by colour (works through a net), falling back " +
+                    "to the COCO \"sports ball\" model -- " +
                     "use it for the pendulum test in TESTING.md.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
