@@ -630,6 +630,190 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+
+        val onToggleLogging: (Boolean) -> Unit = {
+            isLogging = it
+            if (it) {
+                // Ask for the gains if they were never synced (e.g. the app was
+                // restarted); the reply lands well before the log is saved.
+                loggingStartedUnsynced = tripodConfig == null
+                if (loggingStartedUnsynced) udpSender.send("CFG?")
+                logManager.startSession(buildSessionMetadata())
+            } else {
+                if (loggingStartedUnsynced) logManager.startSession(buildSessionMetadata())
+                logManager.saveLog()
+            }
+        }
+
+        when (currentScreen) {
+            "settings" -> {
+                BackHandler { currentScreen = "camera" }
+                ConnectionScreen(
+                    currentIp = esp32Ip,
+                    currentPort = udpPort,
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    manualMode = manualMode,
+                    onManualModeChange = { manualMode = it; saveAdvancedSettings() },
+                    autoZoomEnabled = autoZoomEnabled,
+                    onAutoZoomEnabledChange = { autoZoomEnabled = it; saveAdvancedSettings() },
+                    autoZoomTarget = autoZoomTarget,
+                    onAutoZoomTargetChange = { autoZoomTarget = it; saveAdvancedSettings() },
+                    gestureSettings = gestureSettings,
+                    onGestureSettingsChange = { gestureSettings = it; saveAdvancedSettings() },
+                    onConnect = { ip, port ->
+                        esp32Ip = ip
+                        udpPort = port
+                        saveConnection(ip, port)
+                        currentScreen = "camera"
+                    },
+                    onTest = { ip, port, msg ->
+                        udpSender.updateTarget(ip, port)
+                        udpSender.send(msg)
+                        Toast.makeText(this, "Test packet sent to $ip", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+            "experiment" -> {
+                BackHandler { currentScreen = "camera" }
+                ExperimentScreen(
+                    tripodConfig = tripodConfig,
+                    onApplyPid = { config ->
+                        // The tab edits the gains; the slew limit stays the profile's.
+                        saveModeProfile(modeProfile.withTripodConfig(config))
+                        udpSender.send(cfgPacket(modeProfile.toTripodConfig()))
+                    },
+                    modeProfile = modeProfile,
+                    onFilterTuningChanged = { saveModeProfile(currentFilterTuning()) },
+                    onResetModeProfile = {
+                        getSharedPreferences(PROFILE_PREFS, MODE_PRIVATE).edit().remove(detectionMode.name).apply()
+                        applyModeProfile(detectionMode, sendToTripod = true)
+                    },
+                    onSyncFromTripod = { udpSender.send("CFG?") },
+                    kalmanFilterX = kalmanFilterX,
+                    kalmanFilterY = kalmanFilterY,
+                    predictionHorizonSeconds = predictionHorizonSeconds,
+                    onPredictionHorizonChange = {
+                        predictionHorizonSeconds = it
+                        saveModeProfile(currentFilterTuning())
+                    },
+                    detectionMode = detectionMode,
+                    onDetectionModeChange = { mode -> switchDetectionMode(mode) },
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    testName = testName,
+                    onTestNameChange = { testName = it },
+                    testNotes = testNotes,
+                    onTestNotesChange = { testNotes = it },
+                    onBack = { currentScreen = "camera" }
+                )
+            }
+            else -> {
+                CameraPreviewScreen(
+                    cameraExecutor,
+                    kalmanFilterX,
+                    kalmanFilterY,
+                    roomFrame,
+                    handLandmarker,
+                    isLogging = isLogging,
+                    onToggleLogging = onToggleLogging,
+                    onOpenSettings = { currentScreen = "settings" },
+                    onOpenExperiment = { currentScreen = "experiment" },
+                    lockedId = lockedId,
+                    battery = batteryStatus,
+                    detectionMode = detectionMode,
+                    onDetectionModeChange = { mode -> switchDetectionMode(mode) },
+                    predictionHorizonSeconds = predictionHorizonSeconds,
+                    manualMode = manualMode,
+                    trackingPaused = trackingPaused,
+                    onTrackingPausedChange = { trackingPaused = it },
+                    autoZoomEnabled = autoZoomEnabled,
+                    autoZoomTarget = autoZoomTarget,
+                    gestureSettings = gestureSettings,
+                    onManualDrive = { x, y ->
+                        udpSender.send(String.format(Locale.US, "JOY:%.3f,%.3f,SEQ:%d", x, y, packetSeq++))
+                    },
+                    onUnlock = { lockedId = null },
+                    onTargetUpdate = { id -> lockedId = id }
+                ) { update ->
+                    val seq = packetSeq++
+                    // In manual mode the joystick owns the servos; the error is
+                    // still logged below, which records how the frame moves under
+                    // a known stick command.
+                    // Hold-still band: what is sent, and logged, is the gated error.
+                    val speedLimit = holdSpeed
+                    val sentErrX = settleHoldX.apply(
+                        update.errX, update.measuredErrX, holdEnter, holdExit,
+                        subjectMoving = speedLimit > 0f && update.subjectSpeedX > speedLimit
+                    )
+                    val sentErrY = settleHoldY.apply(
+                        update.errY, update.measuredErrY, holdEnter, holdExit,
+                        subjectMoving = speedLimit > 0f && update.subjectSpeedY > speedLimit
+                    )
+                    if (!manualMode) {
+                        udpSender.send(String.format(Locale.US, "EX:%.4f,EY:%.4f,SEQ:%d", sentErrX, sentErrY, seq))
+                    }
+                    if (isLogging) {
+                        logManager.log(
+                            frameTimestampNanos = update.frameTimestampNanos,
+                            seq = seq,
+                            detectionCount = update.detectionCount,
+                            rawX = update.rawX,
+                            rawY = update.rawY,
+                            filteredX = update.filteredX,
+                            filteredY = update.filteredY,
+                            velocityX = update.velocityX,
+                            velocityY = update.velocityY,
+                            dtSeconds = update.dtSeconds,
+                            errX = sentErrX,
+                            errY = sentErrY,
+                            imu = imuReader.sampleFor(update.frameTimestampNanos)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Snapshot of every tunable in effect right now, written as a CSV comment
+     * header by LogManager.saveLog() so a saved log is self-describing about
+     * which gains produced it. Called when logging is toggled ON.
+     */
+    private fun saveConnection(ip: String, port: Int) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(PREF_ESP32_IP, ip)
+            .putInt(PREF_UDP_PORT, port)
+            .apply()
+    }
+
+    private fun buildSessionMetadata(): Map<String, String> {
+        val cfg = tripodConfig
+        return linkedMapOf(
+            "test_name" to testName.ifBlank { "(unnamed)" },
+            "test_notes" to testNotes,
+            "detection_mode" to detectionMode.name,
+            "prediction_horizon_s" to predictionHorizonSeconds.toString(),
+            "kalman_measurement_noise" to kalmanFilterX.measurementNoise.toString(),
+            "kalman_acceleration_noise" to kalmanFilterX.accelerationNoise.toString(),
+            "hold_enter" to holdEnter.toString(),
+            "hold_exit" to holdExit.toString(),
+            "hold_speed" to holdSpeed.toString(),
+            "gyro_available" to imuReader.available.toString(),
+            "room_frame" to if (roomFrame.active) roomFrame.mode.toString() else "0",
+            "delay_compensation" to roomFrame.delayCompensation.toString(),
+            "fov_half_angle_x_deg" to roomFrame.halfAngleXDeg.toString(),
+            "fov_half_angle_x_rear_deg" to roomFrame.halfAngleRearXDeg.toString(),
+            "tripod_kp" to (cfg?.kp?.toString() ?: "unknown (not synced)"),
+            "tripod_ki" to (cfg?.ki?.toString() ?: "unknown (not synced)"),
+            "tripod_kd" to (cfg?.kd?.toString() ?: "unknown (not synced)"),
+            "tripod_max_speed_offset_us" to (cfg?.maxSpeedOffsetUs?.toString() ?: "unknown (not synced)"),
+            "tripod_deadzone" to (cfg?.deadzone?.toString() ?: "unknown (not synced)"),
+            "tripod_min_offset_us" to (cfg?.minOffsetUs?.toString() ?: "unknown (not synced)"),
+            "tripod_slew_us_per_s" to (cfg?.slewUsPerS?.toString() ?: "unknown (not synced)"),
+            "manual_mode" to manualMode.toString(),
+            "auto_zoom" to if (autoZoomEnabled) autoZoomTarget.toString() else "off"
+        )
     }
 
     /**
@@ -1744,6 +1928,11 @@ private fun processImageProxy(
         var palmY = 0f
         var handLandmarks: List<Offset> = emptyList()
         var gesture = HandGesture.NONE
+
+        // Upright RGB copy of the frame for the MediaPipe models (hand landmarker
+        // and ball detector). Lazy so it's built at most once per frame, and not
+        // at all on FACE-mode frames that skip the hand pass.
+        val uprightBitmap by lazy { imageProxy.toBitmapInternal(rotation) }
 
         // Upright RGB copy of the frame for the MediaPipe models (hand landmarker
         // and ball detector). Lazy so it's built at most once per frame, and not
