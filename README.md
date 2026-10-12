@@ -5,7 +5,7 @@ CamX is a technical Android application designed to interface with motorized tri
 ## System Features
 
 - Three Detection Modes: Face (default), whole Body (MediaPipe pose model, with a skeleton overlay) or Ball, toggled per-session.
-- Hand Gestures: Raise an open palm to lock the tracker onto the nearest detected subject in a crowd (or resume), a closed fist to stop auto tracking, a victory sign to start/stop recording.
+- Hand Gestures: Raise an open palm to lock the tracker onto the nearest detected subject in a crowd (or resume), a closed fist to stop auto tracking, a victory sign to start/stop recording. Each can be switched off in Advanced Settings.
 - Predictive Tracking: Implements a 1D Kalman Filter (one instance per axis) to estimate subject velocity and predict trajectory coordinates.
 - Resolution-Independent Localization: Transmits a normalized X/Y error in [-1, 1] to the hardware layer, decoupled from camera resolution and orientation.
 - Connectivity: Manual IP/port configuration to link with tripod hardware on the local Wi-Fi network.

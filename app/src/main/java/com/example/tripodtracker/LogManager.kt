@@ -34,6 +34,8 @@ class LogManager(private val context: Context) {
      * @param dtSeconds Time since the previous filter update, in seconds.
      * @param errX/@param errY Normalized tracking error in [-1, 1] (subject offset from frame
      *   centre, fraction of half-frame) -- the actual EX/EY sent to the tripod that update.
+     * @param imu How the camera itself turned during this frame, from the gyroscope (see
+     *   [ImuSample]); NaN if the phone has no gyroscope.
      */
     fun log(
         frameTimestampNanos: Long,
@@ -47,11 +49,13 @@ class LogManager(private val context: Context) {
         velocityY: Float,
         dtSeconds: Float,
         errX: Float,
-        errY: Float
+        errY: Float,
+        imu: ImuSample = ImuSample.NONE
     ) {
         val timestamp = dateFormat.format(Date())
         val line = "$timestamp,$frameTimestampNanos,$seq,$detectionCount," +
-            "$rawX,$rawY,$filteredX,$filteredY,$velocityX,$velocityY,$dtSeconds,$errX,$errY"
+            "$rawX,$rawY,$filteredX,$filteredY,$velocityX,$velocityY,$dtSeconds,$errX,$errY," +
+            "${imu.panDps},${imu.tiltDps},${imu.tiltDeg},${imu.ageMs}"
         synchronized(lock) {
             data.add(line)
         }
@@ -100,7 +104,8 @@ class LogManager(private val context: Context) {
                     }
                     writer.write(
                         "Timestamp,FrameTimestampNanos,Seq,DetectionCount," +
-                            "RawX,RawY,FilteredX,FilteredY,VelocityX,VelocityY,DtSeconds,ErrX,ErrY\n"
+                            "RawX,RawY,FilteredX,FilteredY,VelocityX,VelocityY,DtSeconds,ErrX,ErrY," +
+                            "GyroPanDps,GyroTiltDps,TiltDeg,GyroAgeMs\n"
                     )
                     snapshot.forEach { line ->
                         writer.write("$line\n")

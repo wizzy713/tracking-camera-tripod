@@ -89,7 +89,7 @@ const int TILT_NEUTRAL_US = 1500;
 //
 // The first gains (KP 110, KI 50, KD 5) came from a model that assumed a linear
 // servo (camera rate = Ks * pulse offset) and a loop delay of 0.15 s. The
-// pendulum calibration of 2026-10-06 (Tests/calibration.m) measured neither to
+// pendulum calibration of 2026-10-06 (Tests/Ball Tests/calibration.m) measured neither to
 // be true, with a still ball and a fixed pulse (KP 0, DEADZONE 0, so the output
 // is +-MIN_OFFSET_US and the camera rocks across the ball):
 //

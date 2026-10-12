@@ -200,7 +200,7 @@ peak-current measurements.
 ## Tuning the PID
 
 The gains at the top of `camx_tripod.ino` were **measured on the rig** (pendulum
-calibration of 2026-10-06; see `Tests/calibration.m` and the header comment in the
+calibration of 2026-10-06; see `Tests/Ball Tests/calibration.m` and the header comment in the
 sketch). The first set (`KP = 110`, `KI = 50`, `KD = 5`) came from a model that assumed a
 linear servo and a 0.15 s loop delay. Neither held:
 

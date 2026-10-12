@@ -31,7 +31,7 @@ MediaPipe Hand Landmarker identifies hand keypoints in `RunningMode.IMAGE`, on e
 - **Closed fist** (four fingertips nearer the wrist than their PIP joints): stops auto tracking. The lock is released and the tripod is told to hold still (zero error) until an open palm, or a tap on the tracking icon, resumes it. Detection keeps running meanwhile; the screen shows "PAUSED".
 - **Victory sign** (index and middle straight, ring and pinky curled): starts or stops video recording, at most once every 3 s.
 
-The fist and victory sign (and the resume) act only after two consecutive hand checks agree (`GestureTrigger`), and once per showing. These are simple geometric heuristics (not MediaPipe's built-in gesture classifier) and assume a roughly upright hand.
+Each gesture can be switched off individually under Settings -> Advanced Settings (saved to SharedPreferences); the hand pass is skipped entirely on frames where no enabled gesture could act. The fist and victory sign (and the resume) act only after two consecutive hand checks agree (`GestureTrigger`), and once per showing. These are simple geometric heuristics (not MediaPipe's built-in gesture classifier) and assume a roughly upright hand.
 - The frame used for hand detection is rotated to match ML Kit's upright coordinate frame (see "Frame Geometry" below), so palm coordinates and bounding-box coordinates are directly comparable.
 
 ### 3. Frame Geometry
@@ -53,6 +53,15 @@ To compensate for motor latency and network delay, a 1D Kalman Filter (constant-
 - Output: `predicted = position + velocity * predictionHorizonSeconds`. `predictionHorizonSeconds` starts at `DEFAULT_PREDICTION_HORIZON_SECONDS` (200ms, a placeholder) and is also live-tunable from the Experiment tab -- replace it with a measured end-to-end latency once that experiment (see `TESTING.md`) is run.
 - Target loss handling: if a locked target's tracking ID isn't matched for up to `MAX_COAST_FRAMES` (15) consecutive frames, the filter coasts on its own prediction rather than jumping to an arbitrary detected object; beyond that the lock is released.
 
+### 6. Room-coordinate tracking (gyroscope)
+The servos are speed-commanded and report nothing back, so in image coordinates the filter cannot tell the camera's own motion from the subject's: with a subject standing still, 98% of the motion it saw was the camera's. `ImuReader.kt` reads the phone's gyroscope at 200 Hz and integrates it into a camera pan and tilt angle; `RoomFrame.kt` converts that angle to pixels (using the field-of-view half-angle, 28.5 degrees measured for the front camera) and `processImageProxy` subtracts it from each detection before the Kalman update and adds it back afterwards. The filter therefore holds the subject's position in the room, its velocity is the subject's own, and the prediction horizon acts as a feed-forward of the subject's speed. With delay compensation on, the angle added back is the camera's angle when the error is sent, not when the frame was captured.
+
+- On by default for the pan axis in every detection mode; tilt stays in image coordinates until its sign has been checked on the rig. Adb `TUNE` extras: `rc` (0 off, 1 pan, 2 pan and tilt), `dc` (delay compensation), `fov`/`fovr` (half-angle, front/rear camera). The rear camera's half-angle has not been measured and starts at the front camera's.
+- Without the gyroscope, or with `rc 0`, the shift is zero and the filters work in the image as before.
+
+### 7. Hold-still band
+`SettleHold.kt` separates "stop" from "start" on each axis: the error is sent until the predicted error is within the mode's `holdEnter`, then 0 is sent until the filtered position has been outside `holdExit` for two frames. This is what stops the camera hunting around a subject at rest (the servo starts at a fixed minimum speed and overshoots during the loop delay). A mode can also set `holdSpeed`, a subject speed above which the band lets the error through, so a moving subject is not stopped each time it crosses the centre; this needs room-coordinate tracking.
+
 ## Hardware Communication Layer
 
 Data transmission to the ESP32 tripod is handled via UDP.
@@ -72,6 +81,10 @@ With "Manual joystick" on (Settings -> Advanced Settings), the camera screen sho
 With "Auto zoom" on (same place), `AutoZoomController` sets the CameraX zoom ratio each frame to hold the target's bounding box at a chosen fraction of the frame (larger of its width and height; default 35%, adjustable 10-80%). CameraX zoom applies to the analysis frame as well, so the measured size already includes the current zoom and the loop needs no lens or distance model. The ratio changes geometrically with a rate limit and a 15% deadband, is capped at 3x (`AUTO_ZOOM_MAX_RATIO`), never zooms a subject past 90% of the way to the frame edge, and eases back to 1x when the subject is lost.
 
 Zoom is not compensated for in the tracking loop: at ratio `z` the same servo speed moves the subject `z` times faster in normalized frame units, so the effective loop gain rises with zoom. The gains in the firmware were measured at 1x.
+
+### Per-mode tuning profiles
+
+The PID gains, the slew limit, the Kalman noise constants, the prediction horizon and the hold-still band are kept as one `ModeProfile` per `DetectionMode` (`ModeProfile.kt`, saved to SharedPreferences `mode_profiles`). Selecting a mode loads its profile into the filters and sends its gains to the tripod as a `CFG` packet; the same packet is re-sent whenever the tripod is heard from again after a silence, since the firmware does not keep runtime gains across a reboot. "Apply to Tripod", the filter sliders and the debug `TUNE` hook all save into the current mode's profile, and the Experiment tab can reset a mode to its defaults. The `BALL` defaults keep the gains, filter, horizon and slew limit measured on the pendulum on 6 October (in image coordinates), with a hold-still band and speed limit that are new and untested there. The `FACE` defaults are the setting that worked on the rig on 12 October in single runs (pendulum gains and filter, horizon 0.40 s, hold-still band 0.06 / 0.16, slew limit 2000). `BODY` copies `FACE` with a wider deadzone and band and has not been tested. A profile saved before these fields existed keeps its saved gains and takes the new fields from the defaults.
 
 ### Live Tuning (Experiment tab): `CFG` protocol
 
@@ -123,9 +136,9 @@ metadata (the block is simply omitted).
 
 Below that, one row per processed frame is recorded:
 
-`Timestamp, FrameTimestampNanos, Seq, DetectionCount, RawX, RawY, FilteredX, FilteredY, VelocityX, VelocityY, DtSeconds, ErrX, ErrY`
+`Timestamp, FrameTimestampNanos, Seq, DetectionCount, RawX, RawY, FilteredX, FilteredY, VelocityX, VelocityY, DtSeconds, ErrX, ErrY, GyroPanDps, GyroTiltDps, TiltDeg, GyroAgeMs`
 
-`RawX`/`RawY` are `NaN` on frames with no fresh measurement (coasting). Because `VelocityX`/`VelocityY` are logged, a predicted position at *any* horizon can be reconstructed offline as `FilteredX + VelocityX * horizonSeconds` -- this is what a prediction-horizon sweep experiment should use, rather than re-running the app at each horizon. `ErrX`/`ErrY` are the normalized tracking error in `[-1, 1]` (subject offset from frame centre, as a fraction of half-frame) -- the actual `EX`/`EY` values sent to the tripod that frame. This is the primary tracking-error signal for evaluating a test run (e.g. RMS error over a pendulum swing); see `TESTING.md`.
+`RawX`/`RawY` are `NaN` on frames with no fresh measurement (coasting). `GyroPanDps`/`GyroTiltDps` are how fast the camera itself turned during the frame, from the phone's gyroscope (deg/s; pan about the vertical, positive anticlockwise from above; tilt positive with the screen tipping up), `TiltDeg` is the angle of the screen normal above the horizontal from gravity, and `GyroAgeMs` is the frame timestamp minus the newest gyroscope sample used, as a check that the two share a clock. They are logged only and do not feed the tracking loop. Because `VelocityX`/`VelocityY` are logged, a predicted position at *any* horizon can be reconstructed offline as `FilteredX + VelocityX * horizonSeconds` -- this is what a prediction-horizon sweep experiment should use, rather than re-running the app at each horizon. `ErrX`/`ErrY` are the normalized tracking error in `[-1, 1]` (subject offset from frame centre, as a fraction of half-frame) -- the actual `EX`/`EY` values sent to the tripod that frame. This is the primary tracking-error signal for evaluating a test run (e.g. RMS error over a pendulum swing); see `TESTING.md`.
 
 ## Subject Discovery and Initialization
 
@@ -134,7 +147,7 @@ Subject discovery is handled manually via the connection settings. The user spec
 ## Known Limitations / Suggested Follow-ups
 
 - **Gesture recognition is a hand-rotation-sensitive heuristic**, not MediaPipe's built-in `GestureRecognizer` (`Open_Palm` category), and runs in `RunningMode.IMAGE` (blocking) rather than `RunningMode.LIVE_STREAM`.
-- **Experiment-tab settings are not persisted** across app restarts (the tripod IP/port and the Advanced Settings are -- SharedPreferences, plus auto-discovery); no `ViewModel`/`DataStore` layer, so configuration and tracking state also don't survive a configuration change (e.g. rotation). The Experiment tab re-syncs PID gains from the firmware's `CFG` reply on open, so a reconnect after an app restart still recovers the tripod's actual live values -- only the local Kalman/prediction-horizon tuning is lost.
+- **Test name/notes and the selected detection mode are not persisted** across app restarts (the tripod IP/port, the Advanced Settings and the per-mode tuning profiles are -- SharedPreferences, plus auto-discovery); no `ViewModel`/`DataStore` layer, so tracking state also doesn't survive a configuration change (e.g. rotation).
 - **No automated evaluation harness.** The CSV schema above (now including `ErrX`/`ErrY`) and the Experiment tab's live tuning support one, but end-to-end latency, prediction-horizon sweep, ablation (raw vs. filtered vs. predicted RMSE), and packet-loss experiments still need to be run and reported by hand -- see `TESTING.md` for the suggested protocol.
 - **Camera-analysis resolution is not pinned** (no `ResolutionSelector` on `ImageAnalysis`); it varies by device. This no longer causes correctness bugs (the frame-geometry and normalized-protocol fixes above are resolution-agnostic), but it does mean absolute pixel jitter -- and therefore the tuned `KalmanFilter` noise constants -- may vary by device.
 

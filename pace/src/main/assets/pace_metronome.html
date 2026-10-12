@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pace metronome</title>
+<style>
+  :root { --bg: #101418; --fg: #f2f4f6; --dim: #8b96a1; --panel: #1b2229; --accent: #3fb950; --turn: #f0a030; --stop: #e5534b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.1rem; margin: 0 0 12px; color: var(--dim); font-weight: 600; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  button { font: inherit; color: var(--fg); background: var(--panel); border: 2px solid transparent; border-radius: 8px; padding: 10px 16px; cursor: pointer; }
+  button.sel { border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  #go { background: var(--accent); color: #06210c; font-weight: 700; font-size: 1.3rem; padding: 14px 32px; }
+  #go.running { background: var(--stop); color: #fff; }
+  label { color: var(--dim); font-size: 0.9rem; display: flex; flex-direction: column; gap: 4px; }
+  input { font: inherit; width: 6.5em; padding: 8px; border-radius: 6px; border: 1px solid #39434d; background: var(--panel); color: var(--fg); }
+  #stage { background: var(--panel); border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 12px; }
+  #stage.beat { outline: 6px solid var(--accent); }
+  #stage.turn { outline: 6px solid var(--turn); }
+  #phase { font-size: 1.4rem; color: var(--dim); min-height: 1.6em; }
+  #big { font-size: clamp(5rem, 22vw, 12rem); font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  #sub { font-size: clamp(1.4rem, 5vw, 2.6rem); margin-top: 8px; font-variant-numeric: tabular-nums; }
+  #lane { position: relative; height: 46px; margin-top: 18px; }
+  #lane .line { position: absolute; left: 4%; right: 4%; top: 22px; height: 2px; background: var(--dim); }
+  #lane .tick { position: absolute; top: 14px; width: 2px; height: 18px; background: var(--dim); }
+  #lane .tick.c { top: 8px; height: 30px; background: var(--fg); }
+  #dot { position: absolute; top: 9px; width: 28px; height: 28px; margin-left: -14px; border-radius: 50%; background: var(--accent); left: 50%; }
+  #name { font-family: ui-monospace, monospace; font-size: 1.2rem; }
+  small { color: var(--dim); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pace metronome: one step per beat, one mark per step</h1>
+
+  <div class="row" id="cadences"></div>
+
+  <div class="row">
+    <label>Cadence (steps/min)<input id="cadence" type="number" min="20" max="240" value="60"></label>
+    <label>Repetition<input id="rep" type="number" min="1" max="9" value="1"></label>
+    <label>Marks to lane end<input id="half" type="number" min="1" max="20" value="6"></label>
+    <label>Mark spacing (m)<input id="step" type="number" min="0.05" max="1" step="0.05" value="0.25"></label>
+    <label>Laps<input id="laps" type="number" min="1" max="10" value="2"></label>
+    <label>Start delay (s)<input id="delay" type="number" min="0" max="120" value="15"></label>
+  </div>
+
+  <div id="stage">
+    <div id="phase">Ready</div>
+    <div id="big">-</div>
+    <div id="sub">&nbsp;</div>
+    <div id="lane"><div class="line"></div><div id="dot"></div></div>
+  </div>
+
+  <div class="row">
+    <button id="go">Start</button>
+    <span>Run <span id="name"></span><br><small id="info"></small></span>
+  </div>
+  <small>Space starts and stops. Low beeps count you in (4 beats); step off on the first high beep.
+    A longer, higher beep means you should be landing on a lane end; three beeps mean the run is over.</small>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const COUNT_IN = 4;
+let ctx = null, timer = null, wakeLock = null, plan = null;
+
+// Cadence buttons, matching the pace table.
+for (const c of [60, 80, 100, 120, 140, 160, 180]) {
+  const b = document.createElement('button');
+  b.textContent = c;
+  b.dataset.c = c;
+  b.onclick = () => { $('cadence').value = c; refresh(); };
+  $('cadences').appendChild(b);
+}
+
+function settings() {
+  const n = (id, lo, hi) => Math.min(hi, Math.max(lo, Number($(id).value) || lo));
+  return {
+    cadence: n('cadence', 20, 240), rep: n('rep', 1, 9), half: Math.round(n('half', 1, 20)),
+    step: n('step', 0.05, 1), laps: Math.round(n('laps', 1, 10)), delay: n('delay', 0, 120)
+  };
+}
+
+// Position (in marks from the centre) after k steps: 0 -> +half -> -half -> 0 per lap.
+function positionAt(k, half) {
+  const m = k % (4 * half);
+  if (m <= half) return m;
+  if (m <= 3 * half) return 2 * half - m;
+  return m - 4 * half;
+}
+
+function refresh() {
+  const s = settings();
+  for (const b of $('cadences').children) b.classList.toggle('sel', Number(b.dataset.c) === s.cadence);
+  const dist = s.half * s.step;
+  $('name').textContent = 'H-P' + String(s.cadence).padStart(3, '0') + '-r' + s.rep;
+  const total = 4 * s.half * s.laps;
+  $('info').textContent = `${total} steps, ${(total * 60 / s.cadence).toFixed(0)} s, ` +
+    `${(s.step * s.cadence / 60).toFixed(2)} m/s, lane ±${dist.toFixed(2)} m (add the distance suffix, e.g. -D15)`;
+  drawLane(s.half);
+  if (!plan) placeDot(0, s.half);
+}
+
+function drawLane(half) {
+  const lane = $('lane');
+  lane.querySelectorAll('.tick').forEach(t => t.remove());
+  for (let i = -half; i <= half; i++) {
+    const t = document.createElement('div');
+    t.className = 'tick' + (i === 0 ? ' c' : '');
+    t.style.left = (50 + 46 * i / half) + '%';
+    lane.appendChild(t);
+  }
+}
+
+function placeDot(pos, half) { $('dot').style.left = (50 + 46 * pos / half) + '%'; }
+
+function beep(t, freq, dur, gain) {
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.value = freq;
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(gain, t + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g).connect(ctx.destination);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+async function start() {
+  const s = settings();
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await ctx.resume();
+  const beat = 60 / s.cadence;
+  const total = 4 * s.half * s.laps;
+  // Every beat is scheduled on the audio clock up front, so the timing does
+  // not depend on how busy the page is.
+  const t0 = ctx.currentTime + 0.2 + s.delay + COUNT_IN * beat;   // time of step 1
+  for (let i = COUNT_IN; i >= 1; i--) beep(t0 - i * beat, 440, 0.08, 0.5);
+  for (let k = 1; k <= total; k++) {
+    const t = t0 + (k - 1) * beat;
+    const atEnd = Math.abs(positionAt(k, s.half)) === s.half;
+    if (k === total) { for (let j = 0; j < 3; j++) beep(t + j * 0.16, 1320, 0.12, 0.9); }
+    else if (atEnd) beep(t, 1320, 0.22, 0.9);
+    else beep(t, 880, 0.06, 0.8);
+  }
+  plan = { s, beat, total, t0 };
+  $('go').textContent = 'Stop';
+  $('go').classList.add('running');
+  try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { /* not supported: fine */ }
+  timer = requestAnimationFrame(draw);
+}
+
+function stop(finished) {
+  cancelAnimationFrame(timer);
+  if (ctx) ctx.close();
+  ctx = null;
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  const s = plan ? plan.s : settings();
+  plan = null;
+  $('go').textContent = 'Start';
+  $('go').classList.remove('running');
+  $('stage').className = '';
+  if (finished) {
+    $('phase').textContent = 'Done. Stop the log.';
+    $('rep').value = Math.min(9, s.rep + 1);
+    refresh();
+  } else {
+    $('phase').textContent = 'Stopped';
+    $('big').textContent = '-';
+    $('sub').innerHTML = '&nbsp;';
+    placeDot(0, s.half);
+  }
+}
+
+function draw() {
+  const { s, beat, total, t0 } = plan;
+  const now = ctx.currentTime;
+  const stage = $('stage');
+  if (now < t0 - COUNT_IN * beat) {
+    $('phase').textContent = 'Get to the centre mark and start the log';
+    $('big').textContent = Math.ceil(t0 - COUNT_IN * beat - now);
+    $('sub').textContent = 'seconds to count-in';
+  } else if (now < t0) {
+    $('phase').textContent = 'Count-in';
+    $('big').textContent = Math.ceil((t0 - now) / beat);
+    $('sub').textContent = 'step off on the high beep';
+  } else {
+    const k = Math.min(total, Math.floor((now - t0) / beat) + 1);   // step being taken
+    const pos = positionAt(k, s.half);
+    const next = positionAt(Math.min(total, k + 1), s.half);
+    const atEnd = Math.abs(pos) === s.half;
+    $('phase').textContent = `Lap ${Math.min(s.laps, Math.floor((k - 1) / (4 * s.half)) + 1)} of ${s.laps}` +
+      (atEnd ? ': TURN' : '');
+    $('big').textContent = k;
+    $('sub').textContent = `of ${total}   |   ${(pos * s.step >= 0 ? '+' : '') + (pos * s.step).toFixed(2)} m ` +
+      (next > pos ? '→' : next < pos ? '←' : '');
+    placeDot(pos, s.half);
+    const sinceBeat = (now - t0) % beat;
+    stage.className = sinceBeat < 0.12 ? (atEnd ? 'turn' : 'beat') : '';
+    if (now > t0 + (total - 1) * beat + 0.8) { stop(true); return; }
+  }
+  timer = requestAnimationFrame(draw);
+}
+
+$('go').onclick = () => (plan ? stop(false) : start());
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); $('go').click(); }
+});
+for (const id of ['cadence', 'rep', 'half', 'step', 'laps', 'delay']) $(id).addEventListener('input', refresh);
+refresh();
+</script>
+</body>
+</html>

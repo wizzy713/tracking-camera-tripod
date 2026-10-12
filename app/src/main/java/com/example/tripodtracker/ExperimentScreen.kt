@@ -31,6 +31,9 @@ fun ExperimentScreen(
     tripodConfig: TripodConfig?,
     onApplyPid: (TripodConfig) -> Unit,
     onSyncFromTripod: () -> Unit,
+    modeProfile: ModeProfile,
+    onFilterTuningChanged: () -> Unit,
+    onResetModeProfile: () -> Unit,
     kalmanFilterX: KalmanFilter,
     kalmanFilterY: KalmanFilter,
     predictionHorizonSeconds: Float,
@@ -54,6 +57,19 @@ fun ExperimentScreen(
     var deadzone by remember { mutableFloatStateOf(tripodConfig?.deadzone ?: UNSYNCED_DEFAULT_CONFIG.deadzone) }
     var minOffsetUs by remember { mutableFloatStateOf(tripodConfig?.minOffsetUs ?: UNSYNCED_DEFAULT_CONFIG.minOffsetUs) }
 
+    // Selecting a detection mode (or resetting it) loads that mode's saved
+    // gains, shown at once even if the tripod is not connected to echo them.
+    // Keyed on the gains only, so moving a filter slider (which also saves the
+    // profile) does not throw away gain sliders that have not been applied yet.
+    LaunchedEffect(modeProfile.toTripodConfig()) {
+        kp = modeProfile.kp
+        ki = modeProfile.ki
+        kd = modeProfile.kd
+        maxSpeedOffsetUs = modeProfile.maxSpeedOffsetUs
+        deadzone = modeProfile.deadzone
+        minOffsetUs = modeProfile.minOffsetUs
+    }
+
     // Any CFG reply (an "Apply" echo or a "Sync" query response) re-seeds the
     // sliders, so the UI always reflects what the tripod actually has -- e.g.
     // after a Serial-side tune, or after reconnecting to an already-running rig.
@@ -68,8 +84,8 @@ fun ExperimentScreen(
         }
     }
 
-    var measurementNoise by remember { mutableFloatStateOf(kalmanFilterX.measurementNoise) }
-    var accelerationNoise by remember { mutableFloatStateOf(kalmanFilterX.accelerationNoise) }
+    var measurementNoise by remember(modeProfile) { mutableFloatStateOf(kalmanFilterX.measurementNoise) }
+    var accelerationNoise by remember(modeProfile) { mutableFloatStateOf(kalmanFilterX.accelerationNoise) }
 
     Column(
         modifier = Modifier
@@ -79,7 +95,14 @@ fun ExperimentScreen(
             .padding(16.dp)
     ) {
         Text("Experiment", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground)
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "Tuning is saved per detection mode. You are editing ${detectionMode.name}: \"Apply to Tripod\" and " +
+                "the filter sliders save to it, and it is loaded again whenever ${detectionMode.name} is selected.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(modifier = Modifier.height(12.dp))
 
         SectionCard(title = "Tripod PID Gains") {
             if (tripodConfig == null) {
@@ -115,11 +138,13 @@ fun ExperimentScreen(
                 measurementNoise = it
                 kalmanFilterX.measurementNoise = it
                 kalmanFilterY.measurementNoise = it
+                onFilterTuningChanged()
             }
             GainSlider("Acceleration noise σₐ", accelerationNoise, 1f..500f, decimals = 0) {
                 accelerationNoise = it
                 kalmanFilterX.accelerationNoise = it
                 kalmanFilterY.accelerationNoise = it
+                onFilterTuningChanged()
             }
             GainSlider("Prediction horizon (s)", predictionHorizonSeconds, 0f..0.5f, decimals = 3) {
                 onPredictionHorizonChange(it)
@@ -147,8 +172,12 @@ fun ExperimentScreen(
                 )
             }
             Spacer(modifier = Modifier.height(4.dp))
+            OutlinedButton(onClick = onResetModeProfile, modifier = Modifier.fillMaxWidth()) {
+                Text("Reset ${detectionMode.name} tuning to defaults")
+            }
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
-                "Body mode tracks the whole person (COCO \"person\" class), so it keeps " +
+                "Body mode tracks the whole person (pose model, falling back to the COCO \"person\" class), so it keeps " +
                     "following when the subject turns away from the camera. " +
                     "Ball mode tracks a yellow tennis ball by colour (works through a net), falling back " +
                     "to the COCO \"sports ball\" model -- " +
