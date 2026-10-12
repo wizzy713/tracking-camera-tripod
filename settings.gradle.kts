@@ -24,3 +24,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "TripodTracker"
 include(":app")
+include(":pace")

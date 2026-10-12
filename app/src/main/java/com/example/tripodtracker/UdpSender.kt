@@ -36,7 +36,11 @@ data class TripodConfig(
     val ki: Float,
     val kd: Float,
     val maxSpeedOffsetUs: Float,
-    val deadzone: Float
+    val deadzone: Float,
+    // Servo dead-band compensation (us). 0 when the firmware predates it.
+    val minOffsetUs: Float = 0f,
+    // Pulse ramp limit (us/s). 1000 was the fixed value before it became tunable.
+    val slewUsPerS: Float = 1000f
 )
 
 /**
@@ -192,8 +196,8 @@ class UdpSender {
     }
 
     /**
-     * Parses `CFG:KP:<v>,KI:<v>,KD:<v>,MS:<v>,DZ:<v>` (same `KEY:value` convention
-     * as [parseBattery]). Returns null unless all five gains are present.
+     * Parses `CFG:KP:<v>,KI:<v>,KD:<v>,MS:<v>,DZ:<v>[,MO:<v>]` (same `KEY:value` convention
+     * as [parseBattery]). Returns null unless the first five gains are present.
      */
     private fun parseConfig(message: String): TripodConfig? {
         if (!message.startsWith("CFG:")) return null
@@ -206,7 +210,9 @@ class UdpSender {
             ki = fields["KI"]?.toFloatOrNull() ?: return null,
             kd = fields["KD"]?.toFloatOrNull() ?: return null,
             maxSpeedOffsetUs = fields["MS"]?.toFloatOrNull() ?: return null,
-            deadzone = fields["DZ"]?.toFloatOrNull() ?: return null
+            deadzone = fields["DZ"]?.toFloatOrNull() ?: return null,
+            minOffsetUs = fields["MO"]?.toFloatOrNull() ?: 0f,
+            slewUsPerS = fields["SL"]?.toFloatOrNull() ?: 1000f
         )
     }
 }

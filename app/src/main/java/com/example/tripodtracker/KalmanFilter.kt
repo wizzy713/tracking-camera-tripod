@@ -122,14 +122,15 @@ class KalmanFilter(
     internal val covarianceVV: Float get() = p_vv
 
     companion object {
-        // ML Kit bounding-box centre jitter on a person-sized box is roughly
-        // 5-15 px stddev, so R = sigma^2 is roughly 25-225. 100 is the midpoint;
-        // tune it from logged RawX/RawY vs FilteredX/FilteredY once real data exists.
-        const val DEFAULT_MEASUREMENT_NOISE = 100f
+        // Tuned on the pendulum rig (2026-10-06, Ball mode). The earlier
+        // estimates (R = 100, sigma_a = 150) smoothed so heavily that the
+        // filtered position trailed the raw one by 0.14 s, a third of the whole
+        // loop delay, and the tripod could not follow the ball. R = 5 with
+        // sigma_a = 300 removes that lag. Face boxes jitter more than the ball
+        // does, so R may need raising for Face mode; that has not been tested.
+        const val DEFAULT_MEASUREMENT_NOISE = 5f
 
-        // Expected magnitude of subject acceleration, in px/s^2. This is a
-        // starting point, not a measured value -- tune it from the logged
-        // VelocityX/VelocityY columns (see LogManager) before citing results.
-        const val DEFAULT_ACCELERATION_NOISE = 150f
+        // Expected magnitude of subject acceleration, in px/s^2 (see above).
+        const val DEFAULT_ACCELERATION_NOISE = 300f
     }
 }

@@ -15,6 +15,17 @@ Every test below follows the same shape:
    actually sent to the tripod that frame) -- RMS error, peak error, and where in the
    motion the error is worst are the main things to look at across all tests below.
 
+## Where logs and analysis scripts live
+
+- `Tests/Ball Tests/` -- pendulum and ball runs: the `TrackingLog_*.csv` files,
+  `analyze_tracking.m` (per-run dashboards and comparison against the pendulum targets) and
+  `calibration.m` (the dead-band and loop-delay calibration of 2026-10-06).
+- `Tests/Human Tests/` -- runs with a person as the subject (FACE or BODY mode):
+  `analyze_human_tracking.m` and the run procedure in its `README.md`.
+
+Each script analyses the logs in its own folder and writes to a `results/` subfolder there
+(not committed).
+
 ## 1. Bench safety / setup
 
 - Mount the tripod securely; the pan/tilt head is mechanically limited to 0-180 degrees
